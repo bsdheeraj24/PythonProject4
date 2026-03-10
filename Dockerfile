@@ -12,7 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Force single-threaded build to stay within memory limits
+ENV CMAKE_BUILD_PARALLEL_LEVEL=1
+ENV MAKEFLAGS="-j1"
+
+RUN pip install --no-cache-dir dlib && \
+    pip install --no-cache-dir -r requirements.txt
 
 COPY server.py .
 COPY templates/ templates/
