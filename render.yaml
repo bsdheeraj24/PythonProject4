@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: face-attendance
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: FIREBASE_CREDENTIALS
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PORT
+        value: "10000"

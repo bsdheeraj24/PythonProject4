@@ -1,0 +1,29 @@
+# Virtual environments
+.venv/
+.venv1/
+
+# IDE
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment / secrets
+*.env
+.env
+attendance-800f6-firebase-adminsdk-*.json
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Data (migrated to Firestore)
+attendance/
+users.json
+attendance_log.csv
+
+# Generated
+static/chart.png

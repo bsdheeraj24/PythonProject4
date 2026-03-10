@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Faces - Smart Attendance</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+
+<body class="bg-light">
+
+<nav class="navbar navbar-dark bg-primary shadow px-3">
+  <a class="navbar-brand fw-bold" href="/dashboard">⬅ Dashboard</a>
+  <span class="text-white fw-bold">👤 Manage Faces</span>
+  <a href="/logout" class="btn btn-sm btn-outline-light">Logout</a>
+</nav>
+
+<div class="container mt-4">
+
+  <div class="d-flex gap-2 mb-3 flex-wrap">
+    <a href="/add_face" class="btn btn-success fw-bold">➕ Add Face (Single)</a>
+    <a href="/add_face_upload" class="btn btn-warning fw-bold">📤 Add Face (Upload)</a>
+    <a href="/add_face_capture" class="btn btn-primary fw-bold">📸 Add Face (10 Images)</a>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h5 class="fw-bold mb-3">Registered Persons</h5>
+
+      {% if users|length == 0 %}
+      <div class="alert alert-info">No registered faces yet.</div>
+      {% else %}
+      <table class="table table-bordered table-hover">
+        <thead class="table-primary">
+          <tr>
+            <th>Person Name</th>
+            <th width="160">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td>{{ u }}</td>
+            <td>
+              <a href="/delete/{{ u }}" class="btn btn-danger btn-sm"
+                 onclick="return confirm('Delete {{ u }} face and attendance data?')">
+                Delete
+              </a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
