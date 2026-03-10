@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py .
 COPY templates/ templates/
-COPY static/ static/
+RUN mkdir -p static
 COPY known_faces/ known_faces/
 COPY known_faces_encodings.pkl .
 
