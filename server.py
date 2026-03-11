@@ -5,6 +5,7 @@ import io
 import pickle
 import shutil
 import json
+import binascii
 from collections import OrderedDict
 from datetime import datetime
 from functools import wraps
@@ -38,14 +39,56 @@ os.makedirs(KNOWN_DIR, exist_ok=True)
 os.makedirs("static", exist_ok=True)
 
 # ================= FIREBASE =================
-firebase_creds = json.loads(os.environ.get("FIREBASE_CREDENTIALS", "{}"))
-cred = credentials.Certificate(firebase_creds)
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+def _load_firebase_credentials_from_env():
+    """Load Firebase credentials from JSON or base64(JSON) env var."""
+    raw = os.environ.get("FIREBASE_CREDENTIALS", "").strip()
+    if not raw:
+        raise RuntimeError("FIREBASE_CREDENTIALS is not set")
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            decoded = base64.b64decode(raw).decode("utf-8")
+            data = json.loads(decoded)
+        except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "FIREBASE_CREDENTIALS must be valid JSON or base64-encoded JSON"
+            ) from exc
+
+    if isinstance(data, dict) and "private_key" in data and isinstance(data["private_key"], str):
+        data["private_key"] = data["private_key"].replace("\\n", "\n")
+
+    return data
+
+
+FIREBASE_INIT_ERROR = None
+db = None
+
+try:
+    firebase_creds = _load_firebase_credentials_from_env()
+    cred = credentials.Certificate(firebase_creds)
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
+    db = firestore.client()
+except Exception as exc:
+    FIREBASE_INIT_ERROR = str(exc)
+    print(f"Firebase init failed: {FIREBASE_INIT_ERROR}")
 
 # ================= FLASK =================
 app = Flask(__name__, template_folder="templates")
 app.secret_key = os.environ.get("SECRET_KEY", "attendance_secret_key_fallback")
+
+
+@app.before_request
+def ensure_backend_ready():
+    # Keep Render health checks from failing hard if Firebase env is misconfigured.
+    if db is None:
+        return jsonify({
+            "status": "CONFIG_ERROR",
+            "message": "Firebase is not configured correctly.",
+            "details": FIREBASE_INIT_ERROR,
+        }), 503
 
 # ================= GLOBAL STATE =================
 MODE = {"type": "idle", "name": None}
