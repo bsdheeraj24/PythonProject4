@@ -13,6 +13,7 @@ __pycache__/
 # Environment / secrets
 *.env
 .env
+serviceAccountKey.json
 attendance-800f6-firebase-adminsdk-*.json
 
 # OS

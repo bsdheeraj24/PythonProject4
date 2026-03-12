@@ -4,8 +4,13 @@ services:
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
     envVars:
       - key: FIREBASE_CREDENTIALS
+        sync: false
+      - key: FIREBASE_CREDENTIALS_PATH
+        sync: false
+      - key: GOOGLE_APPLICATION_CREDENTIALS
         sync: false
       - key: SECRET_KEY
         generateValue: true

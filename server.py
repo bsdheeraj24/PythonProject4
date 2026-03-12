@@ -39,11 +39,17 @@ os.makedirs(KNOWN_DIR, exist_ok=True)
 os.makedirs("static", exist_ok=True)
 
 # ================= FIREBASE =================
-def _load_firebase_credentials_from_env():
-    """Load Firebase credentials from JSON or base64(JSON) env var."""
-    raw = os.environ.get("FIREBASE_CREDENTIALS", "").strip()
+def _normalize_firebase_credentials(data):
+    if isinstance(data, dict) and "private_key" in data and isinstance(data["private_key"], str):
+        data["private_key"] = data["private_key"].replace("\\n", "\n")
+    return data
+
+
+def _load_firebase_credentials_from_raw(raw):
+    """Load Firebase credentials from JSON or base64(JSON) text."""
+    raw = raw.strip()
     if not raw:
-        raise RuntimeError("FIREBASE_CREDENTIALS is not set")
+        raise RuntimeError("Firebase credentials are empty")
 
     try:
         data = json.loads(raw)
@@ -56,17 +62,45 @@ def _load_firebase_credentials_from_env():
                 "FIREBASE_CREDENTIALS must be valid JSON or base64-encoded JSON"
             ) from exc
 
-    if isinstance(data, dict) and "private_key" in data and isinstance(data["private_key"], str):
-        data["private_key"] = data["private_key"].replace("\\n", "\n")
+    return _normalize_firebase_credentials(data)
 
-    return data
+
+def _load_firebase_credentials_from_file(path, source_name):
+    if not os.path.isfile(path):
+        raise RuntimeError(f"{source_name} points to a missing file: {path}")
+
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return _normalize_firebase_credentials(json.load(handle))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{source_name} must point to a valid JSON file: {path}") from exc
+
+
+def _load_firebase_credentials():
+    raw = os.environ.get("FIREBASE_CREDENTIALS", "").strip()
+    if raw:
+        return _load_firebase_credentials_from_raw(raw)
+
+    for env_name in ("FIREBASE_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS"):
+        path = os.environ.get(env_name, "").strip()
+        if path:
+            return _load_firebase_credentials_from_file(path, env_name)
+
+    for candidate in ("serviceAccountKey.json", "firebase-service-account.json", "firebase_credentials.json"):
+        if os.path.isfile(candidate):
+            return _load_firebase_credentials_from_file(candidate, candidate)
+
+    raise RuntimeError(
+        "Firebase credentials not found. Set FIREBASE_CREDENTIALS, FIREBASE_CREDENTIALS_PATH, "
+        "or GOOGLE_APPLICATION_CREDENTIALS, or add serviceAccountKey.json in the project root"
+    )
 
 
 FIREBASE_INIT_ERROR = None
 db = None
 
 try:
-    firebase_creds = _load_firebase_credentials_from_env()
+    firebase_creds = _load_firebase_credentials()
     cred = credentials.Certificate(firebase_creds)
     if not firebase_admin._apps:
         firebase_admin.initialize_app(cred)
@@ -82,13 +116,29 @@ app.secret_key = os.environ.get("SECRET_KEY", "attendance_secret_key_fallback")
 
 @app.before_request
 def ensure_backend_ready():
-    # Keep Render health checks from failing hard if Firebase env is misconfigured.
+    if request.endpoint == "healthz":
+        return None
+
     if db is None:
         return jsonify({
             "status": "CONFIG_ERROR",
             "message": "Firebase is not configured correctly.",
             "details": FIREBASE_INIT_ERROR,
         }), 503
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({
+        "status": "ok" if db is not None else "config_error",
+        "firebase_ready": db is not None,
+        "details": FIREBASE_INIT_ERROR,
+    }), 200
+
+
+@app.route("/")
+def index():
+    return redirect("/login")
 
 # ================= GLOBAL STATE =================
 MODE = {"type": "idle", "name": None}
