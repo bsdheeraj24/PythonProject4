@@ -574,10 +574,10 @@ def attendance_person(name):
     docs = (
         db.collection("attendance")
         .where("name", "==", name)
-        .order_by("date")
-        .order_by("time")
         .get()
     )
+    # Sort in Python to avoid requiring a Firestore composite index
+    docs = sorted(docs, key=lambda d: (d.to_dict().get("date", ""), d.to_dict().get("time", "")))
 
     grouped = OrderedDict()
     for doc in docs:
