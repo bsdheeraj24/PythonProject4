@@ -30,7 +30,8 @@ import matplotlib.pyplot as plt
 ENC_FILE = "known_faces_encodings.pkl"
 KNOWN_DIR = "known_faces"
 ENROLL_SAMPLES = 10
-MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "8"))
+MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "3"))
+MATCH_THRESHOLD = float(os.environ.get("MATCH_THRESHOLD", "0.58"))
 
 ESP32_CAM_IP = None
 
@@ -355,7 +356,18 @@ def capture():
 
     frame = np.array(img_pil)
 
-    encodings = face_recognition.face_encodings(frame)
+    # Detect faces explicitly and choose the largest one for better stability.
+    locations = face_recognition.face_locations(frame, model="hog")
+    if not locations:
+        LAST_RESULT = {"status": "NO_FACE", "name": "", "entry": "", "confidence": 0}
+        return jsonify(LAST_RESULT)
+
+    best_loc = max(locations, key=lambda loc: max(0, loc[2] - loc[0]) * max(0, loc[1] - loc[3]))
+    encodings = face_recognition.face_encodings(
+        frame,
+        known_face_locations=[best_loc],
+        num_jitters=1,
+    )
     if not encodings:
         LAST_RESULT = {"status": "NO_FACE", "name": "", "entry": "", "confidence": 0}
         return jsonify(LAST_RESULT)
@@ -402,7 +414,7 @@ def capture():
     best_distance = float(distances[best_idx])
 
     # Lower distance means a better match. Keep threshold conservative.
-    if best_distance > 0.52:
+    if best_distance > MATCH_THRESHOLD:
         LAST_RESULT = {"status": "UNKNOWN", "name": "", "entry": "", "confidence": 0}
         return jsonify(LAST_RESULT)
 
