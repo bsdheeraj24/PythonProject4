@@ -152,10 +152,12 @@
 
 <script>
 /* 🔴 CHANGE THIS TO YOUR ESP32 IP */
-const ESP32_STREAM_URL = "{{ stream_url }}";
+let ESP32_STREAM_URL = "{{ stream_url }}";
 
 
 let cachedEnrollName = "";
+let activeStreamTarget = "";
+let activeStreamUrl = "";
 
 function stopStream() {
   const enrollImg = document.getElementById("esp32Stream");
@@ -164,6 +166,8 @@ function stopStream() {
   attendImg.src = "";
   enrollImg.style.display = "none";
   attendImg.style.display = "none";
+  activeStreamTarget = "";
+  activeStreamUrl = "";
 }
 
 function setActiveStream(targetId) {
@@ -181,10 +185,17 @@ function setActiveStream(targetId) {
   otherImg.src = "";
   otherImg.style.display = "none";
 
+  if (activeStreamTarget === targetId && activeStreamUrl === ESP32_STREAM_URL) {
+    targetImg.style.display = "block";
+    return;
+  }
+
   // Force reconnect so browser opens a fresh MJPEG stream on mode switch.
   const streamUrl = ESP32_STREAM_URL + (ESP32_STREAM_URL.includes("?") ? "&" : "?") + "ts=" + Date.now();
   targetImg.src = streamUrl;
   targetImg.style.display = "block";
+  activeStreamTarget = targetId;
+  activeStreamUrl = ESP32_STREAM_URL;
 }
 
 function updateDashboard() {
@@ -251,6 +262,21 @@ function updateDashboard() {
 
         document.getElementById("attendStatus").className =
           "status-text " + (d.entry === "IN" ? "text-success" : "text-danger");
+      } else if (d.status === "UNKNOWN") {
+        document.getElementById("attendName").innerText = "--";
+        document.getElementById("attendStatus").innerText = "UNKNOWN";
+        document.getElementById("attendConf").innerText = "0%";
+        document.getElementById("attendStatus").className = "status-text text-warning";
+      } else if (d.status === "NO_FACE") {
+        document.getElementById("attendName").innerText = "--";
+        document.getElementById("attendStatus").innerText = "NO_FACE";
+        document.getElementById("attendConf").innerText = "0%";
+        document.getElementById("attendStatus").className = "status-text text-secondary";
+      } else if (d.status === "WAIT") {
+        document.getElementById("attendName").innerText = d.name || "--";
+        document.getElementById("attendStatus").innerText = "WAIT";
+        document.getElementById("attendConf").innerText = "";
+        document.getElementById("attendStatus").className = "status-text text-info";
       }
     });
 }
