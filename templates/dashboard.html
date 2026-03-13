@@ -99,6 +99,7 @@
              "
              alt="ESP32 Live Preview">
       </div>
+                <div id="streamHintEnroll" class="small text-muted mb-2"></div>
 
       <!-- PROGRESS -->
       <div class="progress mb-2">
@@ -131,6 +132,7 @@
              "
              alt="ESP32 Live Preview Attend">
       </div>
+                <div id="streamHintAttend" class="small text-muted mb-2"></div>
       <div id="attendName" class="big-text">--</div>
       <div id="attendStatus" class="status-text text-secondary">WAIT</div>
       <div id="attendConf" class="text-muted">0%</div>
@@ -159,6 +161,16 @@ let cachedEnrollName = "";
 let activeStreamTarget = "";
 let activeStreamUrl = "";
 
+function setStreamHint(text, link) {
+  const enrollHint = document.getElementById("streamHintEnroll");
+  const attendHint = document.getElementById("streamHintAttend");
+  const html = link
+    ? `${text} <a href="${link}" target="_blank" rel="noopener">Open Stream</a>`
+    : text;
+  enrollHint.innerHTML = html;
+  attendHint.innerHTML = html;
+}
+
 function stopStream() {
   const enrollImg = document.getElementById("esp32Stream");
   const attendImg = document.getElementById("esp32StreamAttend");
@@ -177,8 +189,15 @@ function setActiveStream(targetId) {
   const otherImg = targetId === "esp32Stream" ? attendImg : enrollImg;
 
   if (!ESP32_STREAM_URL) {
+    setStreamHint("Waiting for ESP32-CAM registration...");
     stopStream();
     return;
+  }
+
+  if (window.location.protocol === "https:" && ESP32_STREAM_URL.startsWith("http://")) {
+    setStreamHint("Browser may block mixed content on HTTPS dashboard.", ESP32_STREAM_URL);
+  } else {
+    setStreamHint("", "");
   }
 
   // Close previous stream socket before opening on another image element.
@@ -194,6 +213,14 @@ function setActiveStream(targetId) {
   const streamUrl = ESP32_STREAM_URL + (ESP32_STREAM_URL.includes("?") ? "&" : "?") + "ts=" + Date.now();
   targetImg.src = streamUrl;
   targetImg.style.display = "block";
+  targetImg.onerror = () => {
+    setStreamHint("Live preview blocked/failed.", ESP32_STREAM_URL);
+  };
+  targetImg.onload = () => {
+    if (window.location.protocol === "https:" && ESP32_STREAM_URL.startsWith("http://")) {
+      setStreamHint("", "");
+    }
+  };
   activeStreamTarget = targetId;
   activeStreamUrl = ESP32_STREAM_URL;
 }
@@ -282,7 +309,7 @@ function updateDashboard() {
 }
 
 // Fast refresh (near real-time)
-setInterval(updateDashboard, 300);
+setInterval(updateDashboard, 700);
 updateDashboard();
 </script>
 
