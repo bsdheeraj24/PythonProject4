@@ -32,6 +32,7 @@ KNOWN_DIR = "known_faces"
 ENROLL_SAMPLES = 10
 MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "3"))
 MATCH_THRESHOLD = float(os.environ.get("MATCH_THRESHOLD", "0.58"))
+NO_FACE_GRACE_SECONDS = float(os.environ.get("NO_FACE_GRACE_SECONDS", "2.0"))
 
 ESP32_CAM_IP = None
 
@@ -154,6 +155,7 @@ LAST_RESULT = {
     "entry": "",
     "confidence": 0
 }
+LAST_FACE_SEEN_AT = None
 
 # ================= HELPERS =================
 def _remove_person_from_meta(name):
@@ -184,6 +186,19 @@ def _recover_esp32_cam_ip():
 def _current_stream_url():
     ip = _recover_esp32_cam_ip()
     return f"http://{ip}:81/stream" if ip else ""
+
+
+def _hold_previous_result_on_no_face():
+    if MODE.get("type") != "attend" or LAST_FACE_SEEN_AT is None:
+        return None
+
+    age = (datetime.now() - LAST_FACE_SEEN_AT).total_seconds()
+    if age <= NO_FACE_GRACE_SECONDS and LAST_RESULT.get("status") in {
+        "ATTENDANCE_MARKED", "WAIT", "UNKNOWN", "NO_KNOWN_FACES"
+    }:
+        return LAST_RESULT
+
+    return None
 
 # ================= USERS =================
 def load_users():
@@ -341,7 +356,7 @@ def last_recognition():
 # ================= CAPTURE (from ESP32-CAM) =================
 @app.route("/capture", methods=["POST"])
 def capture():
-    global ENROLL_COUNT, LAST_RESULT
+    global ENROLL_COUNT, LAST_RESULT, LAST_FACE_SEEN_AT
     global known_encodings, known_names
 
     data = request.get_json(force=True, silent=True) or {}
@@ -359,6 +374,9 @@ def capture():
     # Detect faces explicitly and choose the largest one for better stability.
     locations = face_recognition.face_locations(frame, model="hog")
     if not locations:
+        held = _hold_previous_result_on_no_face()
+        if held is not None:
+            return jsonify(held)
         LAST_RESULT = {"status": "NO_FACE", "name": "", "entry": "", "confidence": 0}
         return jsonify(LAST_RESULT)
 
@@ -369,10 +387,14 @@ def capture():
         num_jitters=1,
     )
     if not encodings:
+        held = _hold_previous_result_on_no_face()
+        if held is not None:
+            return jsonify(held)
         LAST_RESULT = {"status": "NO_FACE", "name": "", "entry": "", "confidence": 0}
         return jsonify(LAST_RESULT)
 
     face = encodings[0]
+    LAST_FACE_SEEN_AT = datetime.now()
 
     # -------- ENROLL --------
     if MODE["type"] == "enroll":
