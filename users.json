@@ -1,0 +1,18 @@
+{
+  "Techyguide": {
+    "password": "Techyguide@123",
+    "role": "admin"
+  },
+  "dheeraj": {
+    "password": "1234",
+    "role": "user"
+  },
+  "anil": {
+    "password": "1234",
+    "role": "user"
+  },
+  "sheshnag": {
+    "password": "1234",
+    "role": "user"
+  }
+}
