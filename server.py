@@ -673,17 +673,28 @@ def attendance_person(name):
 @app.route("/attendance/delete_by_date", methods=["POST"])
 @login_required
 def delete_attendance_by_date():
-    name = request.form.get("name")
-    from_date = request.form.get("from_date")
-    to_date = request.form.get("to_date")
+    name = (request.form.get("name") or "").strip()
+    from_date = (request.form.get("from_date") or "").strip()
+    to_date = (request.form.get("to_date") or "").strip()
 
-    docs = (
-        db.collection("attendance")
-        .where("name", "==", name)
-        .where("date", ">=", from_date)
-        .where("date", "<=", to_date)
-        .get()
-    )
+    if not name or not from_date or not to_date:
+        return "Name and date range are required", 400
+
+    try:
+        from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+        to_dt = datetime.strptime(to_date, "%Y-%m-%d")
+    except ValueError:
+        return "Invalid date format", 400
+
+    if from_dt > to_dt:
+        return "From date cannot be later than To date", 400
+
+    # Query by name only and filter date range in Python to avoid composite index errors.
+    docs = db.collection("attendance").where("name", "==", name).get()
+    docs = [
+        doc for doc in docs
+        if from_date <= doc.to_dict().get("date", "") <= to_date
+    ]
 
     for i in range(0, len(docs), 500):
         batch = db.batch()
