@@ -114,9 +114,12 @@ app = Flask(__name__, template_folder="templates")
 app.secret_key = os.environ.get("SECRET_KEY", "attendance_secret_key_fallback")
 
 
+_DEVICE_ENDPOINTS = {"healthz", "esp32_register", "set_mode", "status", "last_recognition"}
+
 @app.before_request
 def ensure_backend_ready():
-    if request.endpoint == "healthz":
+    # Device endpoints (ESP32/ESP32-CAM) and health check don't require Firebase
+    if request.endpoint in _DEVICE_ENDPOINTS:
         return None
 
     if db is None:
@@ -661,23 +664,24 @@ def delete_person_attendance(name):
 @app.route("/export/<name>")
 @login_required
 def export_person(name):
-    docs = (
-        db.collection("attendance")
-        .where("name", "==", name)
-        .order_by("date")
-        .order_by("time")
-        .get()
-    )
+    docs = db.collection("attendance").where("name", "==", name).get()
 
     if not docs:
         return "No attendance data found"
 
+    rows = [doc.to_dict() for doc in docs]
+    rows = sorted(rows, key=lambda d: (d.get("date", ""), d.get("time", "")))
+
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["Date", "Time", "Name", "Status"])
-    for doc in docs:
-        d = doc.to_dict()
-        writer.writerow([d["date"], d["time"], d["name"], d["status"]])
+    for row in rows:
+        writer.writerow([
+            row.get("date", ""),
+            row.get("time", ""),
+            row.get("name", name),
+            row.get("status", ""),
+        ])
 
     output.seek(0)
     return send_file(
