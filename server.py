@@ -33,6 +33,7 @@ ENROLL_SAMPLES = 10
 MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "3"))
 MATCH_THRESHOLD = float(os.environ.get("MATCH_THRESHOLD", "0.58"))
 NO_FACE_GRACE_SECONDS = float(os.environ.get("NO_FACE_GRACE_SECONDS", "2.0"))
+STATUS_HOLD_SECONDS = float(os.environ.get("STATUS_HOLD_SECONDS", "2.5"))
 
 ESP32_CAM_IP = None
 
@@ -156,6 +157,7 @@ LAST_RESULT = {
     "confidence": 0
 }
 LAST_FACE_SEEN_AT = None
+LAST_RESULT_SET_AT = datetime.now()
 
 # ================= HELPERS =================
 def _remove_person_from_meta(name):
@@ -186,6 +188,24 @@ def _recover_esp32_cam_ip():
 def _current_stream_url():
     ip = _recover_esp32_cam_ip()
     return f"http://{ip}:81/stream" if ip else ""
+
+
+def _set_last_result(data):
+    global LAST_RESULT, LAST_RESULT_SET_AT
+    LAST_RESULT = data
+    LAST_RESULT_SET_AT = datetime.now()
+
+
+def _hold_last_result_for_esp32():
+    holdable_statuses = {"ATTENDANCE_MARKED", "WAIT", "UNKNOWN", "NO_KNOWN_FACES"}
+    if MODE.get("type") != "attend" or LAST_RESULT.get("status") not in holdable_statuses:
+        return None
+
+    age = (datetime.now() - LAST_RESULT_SET_AT).total_seconds()
+    if age <= STATUS_HOLD_SECONDS:
+        return LAST_RESULT
+
+    return None
 
 
 def _hold_previous_result_on_no_face():
@@ -330,12 +350,12 @@ def set_mode():
     MODE["name"] = data.get("name", None)
     ENROLL_COUNT = 0
 
-    LAST_RESULT = {
+    _set_last_result({
         "status": MODE["type"].upper(),
         "name": MODE["name"] or "",
         "entry": "",
         "confidence": 0
-    }
+    })
 
     return jsonify({"status": "ok", "mode": MODE})
 
@@ -369,6 +389,10 @@ def capture():
     except:
         return jsonify({"status": "BAD_IMAGE"})
 
+    held = _hold_last_result_for_esp32()
+    if held is not None:
+        return jsonify(held)
+
     frame = np.array(img_pil)
 
     # Detect faces explicitly and choose the largest one for better stability.
@@ -377,7 +401,7 @@ def capture():
         held = _hold_previous_result_on_no_face()
         if held is not None:
             return jsonify(held)
-        LAST_RESULT = {"status": "NO_FACE", "name": "", "entry": "", "confidence": 0}
+        _set_last_result({"status": "NO_FACE", "name": "", "entry": "", "confidence": 0})
         return jsonify(LAST_RESULT)
 
     best_loc = max(locations, key=lambda loc: max(0, loc[2] - loc[0]) * max(0, loc[1] - loc[3]))
@@ -390,7 +414,7 @@ def capture():
         held = _hold_previous_result_on_no_face()
         if held is not None:
             return jsonify(held)
-        LAST_RESULT = {"status": "NO_FACE", "name": "", "entry": "", "confidence": 0}
+        _set_last_result({"status": "NO_FACE", "name": "", "entry": "", "confidence": 0})
         return jsonify(LAST_RESULT)
 
     face = encodings[0]
@@ -420,15 +444,15 @@ def capture():
             MODE["type"] = "idle"
             MODE["name"] = None
 
-            LAST_RESULT = {"status": "ENROLL_COMPLETE", "name": name, "entry": "", "confidence": 100}
+            _set_last_result({"status": "ENROLL_COMPLETE", "name": name, "entry": "", "confidence": 100})
             return jsonify(LAST_RESULT)
 
-        LAST_RESULT = {"status": "ENROLLING", "name": name, "entry": "", "confidence": 0}
+        _set_last_result({"status": "ENROLLING", "name": name, "entry": "", "confidence": 0})
         return jsonify({"status": "ENROLLING", "count": ENROLL_COUNT})
 
     # -------- ATTEND --------
     if not known_encodings:
-        LAST_RESULT = {"status": "NO_KNOWN_FACES", "name": "", "entry": "", "confidence": 0}
+        _set_last_result({"status": "NO_KNOWN_FACES", "name": "", "entry": "", "confidence": 0})
         return jsonify(LAST_RESULT)
 
     distances = face_recognition.face_distance(known_encodings, face)
@@ -437,7 +461,7 @@ def capture():
 
     # Lower distance means a better match. Keep threshold conservative.
     if best_distance > MATCH_THRESHOLD:
-        LAST_RESULT = {"status": "UNKNOWN", "name": "", "entry": "", "confidence": 0}
+        _set_last_result({"status": "UNKNOWN", "name": "", "entry": "", "confidence": 0})
         return jsonify(LAST_RESULT)
 
     name = known_names[best_idx]
@@ -470,7 +494,7 @@ def capture():
         diff = (now - last_time).total_seconds()
 
         if diff < MIN_GAP_SECONDS:
-            LAST_RESULT = {"status": "WAIT", "name": name, "entry": "", "confidence": 0}
+            _set_last_result({"status": "WAIT", "name": name, "entry": "", "confidence": 0})
             return jsonify({"status": "WAIT", "seconds": int(MIN_GAP_SECONDS - diff)})
 
         entry = "OUT" if last_status == "IN" else "IN"
@@ -495,7 +519,7 @@ def capture():
     else:
         meta_ref.set({"names": [name]})
 
-    LAST_RESULT = {"status": "ATTENDANCE_MARKED", "name": name, "entry": entry, "confidence": confidence}
+    _set_last_result({"status": "ATTENDANCE_MARKED", "name": name, "entry": entry, "confidence": confidence})
     return jsonify(LAST_RESULT)
 
 # ================= FACES =================
