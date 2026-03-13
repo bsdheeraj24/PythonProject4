@@ -6,8 +6,13 @@ import pickle
 import shutil
 import json
 import binascii
+import smtplib
+import ssl
+import threading
+import time
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, time as dt_time
+from email.message import EmailMessage
 from functools import wraps
 
 from flask import (
@@ -30,10 +35,39 @@ import matplotlib.pyplot as plt
 ENC_FILE = "known_faces_encodings.pkl"
 KNOWN_DIR = "known_faces"
 ENROLL_SAMPLES = 10
-MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "20"))
+MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "60"))
 MATCH_THRESHOLD = float(os.environ.get("MATCH_THRESHOLD", "0.58"))
 NO_FACE_GRACE_SECONDS = float(os.environ.get("NO_FACE_GRACE_SECONDS", "2.0"))
 STATUS_HOLD_SECONDS = float(os.environ.get("STATUS_HOLD_SECONDS", "2.5"))
+
+
+def _is_true(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_doc_token(value):
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in (value or "").strip())
+    return cleaned.strip("_") or "unknown"
+
+
+def _parse_cutoff_time(value):
+    text = (value or "09:45").strip()
+    try:
+        return datetime.strptime(text, "%H:%M").time()
+    except ValueError:
+        return datetime.strptime("09:45", "%H:%M").time()
+
+
+LATE_ALERT_ENABLED = _is_true(os.environ.get("LATE_ALERT_ENABLED", "0"))
+LATE_ALERT_PERSON = os.environ.get("LATE_ALERT_PERSON", "").strip()
+LATE_ALERT_TO_EMAIL = os.environ.get("LATE_ALERT_TO_EMAIL", "").strip()
+LATE_ALERT_CUTOFF = _parse_cutoff_time(os.environ.get("LATE_ALERT_CUTOFF", "09:45"))
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com").strip()
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
+SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "").strip()
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "").strip()
+SMTP_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", SMTP_USERNAME).strip()
 
 ESP32_CAM_IP = None
 
@@ -219,6 +253,159 @@ def _hold_previous_result_on_no_face():
         return LAST_RESULT
 
     return None
+
+
+def _get_first_in_time_for_date(person_name, date_value):
+    docs = (
+        db.collection("attendance")
+        .where("name", "==", person_name)
+        .where("date", "==", date_value)
+        .where("status", "==", "IN")
+        .get()
+    )
+
+    if not docs:
+        return None
+
+    rows = sorted((doc.to_dict() for doc in docs), key=lambda d: d.get("time", ""))
+    first_time = rows[0].get("time", "")
+    if not first_time:
+        return None
+
+    return datetime.strptime(first_time, "%H:%M:%S").time()
+
+
+def _check_late_status(person_name, now_dt):
+    date_value = now_dt.strftime("%Y-%m-%d")
+    first_in_time = _get_first_in_time_for_date(person_name, date_value)
+
+    if first_in_time is None:
+        return True, "No IN attendance marked before cutoff", None
+
+    if first_in_time > LATE_ALERT_CUTOFF:
+        return True, f"First IN time was {first_in_time.strftime('%H:%M:%S')}", first_in_time
+
+    return False, "On time", first_in_time
+
+
+def _late_alert_doc_ref(person_name, date_value):
+    doc_id = f"{date_value}_{_safe_doc_token(person_name)}"
+    return db.collection("late_alerts").document(doc_id)
+
+
+def _acquire_daily_late_alert_lock(person_name, date_value):
+    doc_ref = _late_alert_doc_ref(person_name, date_value)
+    doc_ref.create({
+        "name": person_name,
+        "date": date_value,
+        "status": "processing",
+        "created_at": firestore.SERVER_TIMESTAMP,
+    })
+    return doc_ref
+
+
+def _send_late_alert_email(person_name, date_value, reason_text):
+    if not all([SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL, LATE_ALERT_TO_EMAIL]):
+        print("Late alert email skipped: SMTP settings or recipient are incomplete")
+        return False
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Late Attendance Alert - {person_name} ({date_value})"
+    msg["From"] = SMTP_FROM_EMAIL
+    msg["To"] = LATE_ALERT_TO_EMAIL
+    msg.set_content(
+        f"Attendance late alert for {person_name} on {date_value}.\n"
+        f"Cutoff time: {LATE_ALERT_CUTOFF.strftime('%H:%M')}\n"
+        f"Reason: {reason_text}\n"
+    )
+
+    if SMTP_PORT == 465:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=20) as server:
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+
+    return True
+
+
+def _late_alert_worker():
+    print("Late alert worker started")
+    while True:
+        try:
+            if db is None or not LATE_ALERT_PERSON:
+                time.sleep(60)
+                continue
+
+            now_dt = datetime.now()
+            cutoff_dt = now_dt.replace(
+                hour=LATE_ALERT_CUTOFF.hour,
+                minute=LATE_ALERT_CUTOFF.minute,
+                second=0,
+                microsecond=0,
+            )
+
+            if now_dt < cutoff_dt:
+                time.sleep(60)
+                continue
+
+            date_value = now_dt.strftime("%Y-%m-%d")
+            is_late, reason_text, first_in_time = _check_late_status(LATE_ALERT_PERSON, now_dt)
+
+            if not is_late:
+                time.sleep(60)
+                continue
+
+            try:
+                doc_ref = _acquire_daily_late_alert_lock(LATE_ALERT_PERSON, date_value)
+            except Exception as exc:
+                # Firestore raises an "already exists" error if another worker created
+                # this day's lock first. Skip in that case to avoid duplicate emails.
+                if "already exists" in str(exc).lower():
+                    time.sleep(60)
+                    continue
+                raise
+
+            try:
+                email_sent = _send_late_alert_email(LATE_ALERT_PERSON, date_value, reason_text)
+                if email_sent:
+                    payload = {
+                        "status": "sent",
+                        "reason": reason_text,
+                        "sent_to": LATE_ALERT_TO_EMAIL,
+                        "updated_at": firestore.SERVER_TIMESTAMP,
+                    }
+                    if first_in_time is not None:
+                        payload["first_in"] = first_in_time.strftime("%H:%M:%S")
+                    doc_ref.set(payload, merge=True)
+                    print(f"Late alert sent for {LATE_ALERT_PERSON} on {date_value}")
+                else:
+                    doc_ref.delete()
+            except Exception as exc:
+                print(f"Late alert send failed: {exc}")
+                doc_ref.delete()
+
+        except Exception as exc:
+            print(f"Late alert worker error: {exc}")
+
+        time.sleep(60)
+
+
+def _start_late_alert_worker():
+    if not LATE_ALERT_ENABLED:
+        print("Late alert worker disabled")
+        return
+
+    if not LATE_ALERT_PERSON:
+        print("Late alert worker disabled: LATE_ALERT_PERSON is not set")
+        return
+
+    worker = threading.Thread(target=_late_alert_worker, daemon=True)
+    worker.start()
 
 # ================= USERS =================
 def load_users():
@@ -823,6 +1010,8 @@ def charts():
     return render_template("charts.html")
 
 # ================= RUN =================
+_start_late_alert_worker()
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
