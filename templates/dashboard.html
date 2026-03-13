@@ -118,6 +118,19 @@
   <!-- ATTEND CARD -->
   <div class="card shadow-lg mb-4 d-none" id="attendCard">
     <div class="card-body text-center">
+      <div class="fw-semibold text-primary mb-2">Live Camera Preview</div>
+      <div class="d-flex justify-content-center mb-3">
+        <img id="esp32StreamAttend"
+             class="rounded shadow-lg border border-3 border-primary"
+             style="
+               display:none;
+               width:100%;
+               max-width:720px;
+               aspect-ratio:4/3;
+               object-fit:cover;
+             "
+             alt="ESP32 Live Preview Attend">
+      </div>
       <div id="attendName" class="big-text">--</div>
       <div id="attendStatus" class="status-text text-secondary">WAIT</div>
       <div id="attendConf" class="text-muted">0%</div>
@@ -145,9 +158,33 @@ const ESP32_STREAM_URL = "{{ stream_url }}";
 let cachedEnrollName = "";
 
 function stopStream() {
-  const img = document.getElementById("esp32Stream");
-  img.src = "";
-  img.style.display = "none";
+  const enrollImg = document.getElementById("esp32Stream");
+  const attendImg = document.getElementById("esp32StreamAttend");
+  enrollImg.src = "";
+  attendImg.src = "";
+  enrollImg.style.display = "none";
+  attendImg.style.display = "none";
+}
+
+function setActiveStream(targetId) {
+  const enrollImg = document.getElementById("esp32Stream");
+  const attendImg = document.getElementById("esp32StreamAttend");
+  const targetImg = document.getElementById(targetId);
+  const otherImg = targetId === "esp32Stream" ? attendImg : enrollImg;
+
+  if (!ESP32_STREAM_URL) {
+    stopStream();
+    return;
+  }
+
+  // Close previous stream socket before opening on another image element.
+  otherImg.src = "";
+  otherImg.style.display = "none";
+
+  // Force reconnect so browser opens a fresh MJPEG stream on mode switch.
+  const streamUrl = ESP32_STREAM_URL + (ESP32_STREAM_URL.includes("?") ? "&" : "?") + "ts=" + Date.now();
+  targetImg.src = streamUrl;
+  targetImg.style.display = "block";
 }
 
 function updateDashboard() {
@@ -180,18 +217,14 @@ function updateDashboard() {
           `Captured ${count} / 10 images`;
 
         // START STREAM
-        const img = document.getElementById("esp32Stream");
-        if (img.src !== ESP32_STREAM_URL) {
-          img.src = ESP32_STREAM_URL;
-        }
-        img.style.display = "block";
+        setActiveStream("esp32Stream");
       }
 
       // ---------- ATTEND ----------
       else if (s.mode === "attend") {
         document.getElementById("enrollCard").classList.add("d-none");
         document.getElementById("attendCard").classList.remove("d-none");
-        stopStream();
+        setActiveStream("esp32StreamAttend");
         cachedEnrollName = "";
       }
 
