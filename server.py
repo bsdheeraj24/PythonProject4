@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 ENC_FILE = "known_faces_encodings.pkl"
 KNOWN_DIR = "known_faces"
 ENROLL_SAMPLES = 10
-MIN_GAP_SECONDS = 20
+MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "8"))
 
 ESP32_CAM_IP = None
 
@@ -164,6 +164,26 @@ def _remove_person_from_meta(name):
             names.remove(name)
             meta_ref.update({"names": names})
 
+
+def _recover_esp32_cam_ip():
+    global ESP32_CAM_IP
+    if ESP32_CAM_IP or db is None:
+        return ESP32_CAM_IP
+
+    try:
+        doc = db.collection("metadata").document("device_state").get()
+        if doc.exists:
+            ESP32_CAM_IP = doc.to_dict().get("esp32_cam_ip")
+    except Exception:
+        pass
+
+    return ESP32_CAM_IP
+
+
+def _current_stream_url():
+    ip = _recover_esp32_cam_ip()
+    return f"http://{ip}:81/stream" if ip else ""
+
 # ================= USERS =================
 def load_users():
     users = {}
@@ -205,7 +225,14 @@ def ddmmyyyy(date_str):
 def esp32_register():
     global ESP32_CAM_IP
     data = request.get_json(force=True, silent=True) or {}
-    ESP32_CAM_IP = data.get("ip")
+    ESP32_CAM_IP = (data.get("ip") or "").strip()
+
+    if db is not None and ESP32_CAM_IP:
+        db.collection("metadata").document("device_state").set({
+            "esp32_cam_ip": ESP32_CAM_IP,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+
     print("ESP32-CAM Registered IP:", ESP32_CAM_IP)
     return jsonify({"status": "ok", "ip": ESP32_CAM_IP})
 
@@ -237,7 +264,7 @@ def logout():
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    stream_url = f"http://{ESP32_CAM_IP}:81/stream" if ESP32_CAM_IP else ""
+    stream_url = _current_stream_url()
     return render_template("dashboard.html", stream_url=stream_url)
 
 # ================= USERS =================
@@ -302,7 +329,8 @@ def status():
         "mode": MODE["type"],
         "name": MODE["name"],
         "enroll_count": ENROLL_COUNT,
-        "last": LAST_RESULT
+        "last": LAST_RESULT,
+        "stream_url": _current_stream_url(),
     })
 
 @app.route("/last_recognition")
@@ -365,14 +393,21 @@ def capture():
         return jsonify({"status": "ENROLLING", "count": ENROLL_COUNT})
 
     # -------- ATTEND --------
-    matches = face_recognition.compare_faces(known_encodings, face, tolerance=0.5)
-    if True not in matches:
+    if not known_encodings:
+        LAST_RESULT = {"status": "NO_KNOWN_FACES", "name": "", "entry": "", "confidence": 0}
+        return jsonify(LAST_RESULT)
+
+    distances = face_recognition.face_distance(known_encodings, face)
+    best_idx = int(np.argmin(distances))
+    best_distance = float(distances[best_idx])
+
+    # Lower distance means a better match. Keep threshold conservative.
+    if best_distance > 0.52:
         LAST_RESULT = {"status": "UNKNOWN", "name": "", "entry": "", "confidence": 0}
         return jsonify(LAST_RESULT)
 
-    idx = matches.index(True)
-    name = known_names[idx]
-    confidence = 85
+    name = known_names[best_idx]
+    confidence = max(0, min(99, int((1.0 - best_distance) * 100)))
 
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
@@ -383,8 +418,13 @@ def capture():
         db.collection("attendance")
         .where("name", "==", name)
         .where("date", "==", today)
-        .order_by("time")
         .get()
+    )
+
+    # Sort in Python to avoid requiring a Firestore composite index.
+    today_docs = sorted(
+        today_docs,
+        key=lambda d: d.to_dict().get("time", "")
     )
 
     if today_docs:

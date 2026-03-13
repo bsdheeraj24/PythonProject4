@@ -193,6 +193,9 @@ function updateDashboard() {
   fetch("/status")
     .then(r => r.json())
     .then(s => {
+      if (s.stream_url) {
+        ESP32_STREAM_URL = s.stream_url;
+      }
 
       document.getElementById("modeText").innerText =
         (s.mode || "idle").toUpperCase();
