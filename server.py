@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 ENC_FILE = "known_faces_encodings.pkl"
 KNOWN_DIR = "known_faces"
 ENROLL_SAMPLES = 10
-MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "3"))
+MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "20"))
 MATCH_THRESHOLD = float(os.environ.get("MATCH_THRESHOLD", "0.58"))
 NO_FACE_GRACE_SECONDS = float(os.environ.get("NO_FACE_GRACE_SECONDS", "2.0"))
 STATUS_HOLD_SECONDS = float(os.environ.get("STATUS_HOLD_SECONDS", "2.5"))
