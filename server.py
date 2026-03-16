@@ -740,8 +740,8 @@ def capture():
     # -------- ENROLL --------
     if MODE["type"] == "enroll":
         name = MODE["name"]
-        if not name:
-            return jsonify({"status": "NO_NAME"})
+        if not _is_plausible_face_name(name):
+            return jsonify({"status": "NO_NAME", "error": "Invalid or missing name"})
 
         person_dir = os.path.join(KNOWN_DIR, name)
         os.makedirs(person_dir, exist_ok=True)
