@@ -212,6 +212,44 @@ def _get_faces_meta_names():
     return meta_doc.to_dict().get("names", [])
 
 
+def _normalize_face_name(name):
+    if not isinstance(name, str):
+        return ""
+    return " ".join(name.strip().split())
+
+
+def _face_name_key(name):
+    return _normalize_face_name(name).casefold()
+
+
+def _is_plausible_face_name(name):
+    normalized = _normalize_face_name(name)
+    if len(normalized) < 2:
+        return False
+
+    lowered = normalized.casefold()
+    blocked = {
+        "p", "profile", "profiles", "person", "persons", "people",
+        "default", "metadata", "config", "settings", "unknown", "test",
+    }
+    if lowered in blocked:
+        return False
+
+    return any(ch.isalpha() for ch in normalized)
+
+
+def _dedupe_face_names(names):
+    by_key = {}
+    for raw in names:
+        normalized = _normalize_face_name(raw)
+        if not _is_plausible_face_name(normalized):
+            continue
+        key = _face_name_key(normalized)
+        if key not in by_key:
+            by_key[key] = normalized
+    return sorted(by_key.values(), key=str.lower)
+
+
 def _extract_name_candidates(payload, fallback_id=""):
     if not isinstance(payload, dict):
         return []
@@ -220,10 +258,14 @@ def _extract_name_candidates(payload, fallback_id=""):
     for key in ("name", "full_name", "person_name", "person", "user", "username", "id"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
-            candidates.append(value.strip())
+            normalized = _normalize_face_name(value)
+            if _is_plausible_face_name(normalized):
+                candidates.append(normalized)
 
     if not candidates and fallback_id:
-        candidates.append(str(fallback_id).strip())
+        normalized_id = _normalize_face_name(str(fallback_id))
+        if _is_plausible_face_name(normalized_id):
+            candidates.append(normalized_id)
 
     return candidates
 
@@ -243,46 +285,53 @@ def _get_faces_from_collection(collection_name):
 
 
 def _get_faces_from_firestore():
-    names = set(_get_faces_meta_names())
+    names = set(_dedupe_face_names(_get_faces_meta_names()))
 
     try:
         attendance_meta = db.collection("metadata").document("attendance_persons").get()
         if attendance_meta.exists:
             for name in attendance_meta.to_dict().get("names", []):
-                if isinstance(name, str) and name.strip():
-                    names.add(name.strip())
+                normalized = _normalize_face_name(name)
+                if normalized:
+                    names.add(normalized)
     except Exception:
         pass
 
     for coll in ("enrolled_faces", "faces", "known_faces"):
         for name in _get_faces_from_collection(coll):
-            names.add(name)
+            normalized = _normalize_face_name(name)
+            if normalized:
+                names.add(normalized)
 
-    return sorted(names, key=str.lower)
+    return _dedupe_face_names(names)
 
 
 def _add_face_to_meta(name):
-    if not name:
+    normalized_name = _normalize_face_name(name)
+    if not normalized_name:
         return
 
-    names = _get_faces_meta_names()
-    if name in names:
+    names = _dedupe_face_names(_get_faces_meta_names())
+    existing_keys = {_face_name_key(n) for n in names}
+    if _face_name_key(normalized_name) in existing_keys:
         return
 
-    names.append(name)
-    db.collection("metadata").document("enrolled_faces").set({"names": names}, merge=True)
+    names.append(normalized_name)
+    db.collection("metadata").document("enrolled_faces").set({"names": _dedupe_face_names(names)}, merge=True)
 
 
 def _remove_face_from_meta(name):
-    if not name:
+    normalized_name = _normalize_face_name(name)
+    if not normalized_name:
         return
 
-    names = _get_faces_meta_names()
-    if name not in names:
+    names = _dedupe_face_names(_get_faces_meta_names())
+    target_key = _face_name_key(normalized_name)
+    kept = [n for n in names if _face_name_key(n) != target_key]
+    if len(kept) == len(names):
         return
 
-    names.remove(name)
-    db.collection("metadata").document("enrolled_faces").set({"names": names}, merge=True)
+    db.collection("metadata").document("enrolled_faces").set({"names": kept}, merge=True)
 
 
 def _recover_esp32_cam_ip():
@@ -803,13 +852,7 @@ def faces():
     cloud_persons = _get_faces_from_firestore()
 
     # Keep UI consistent on ephemeral filesystems by using Firebase + local union.
-    persons = sorted(set(local_persons) | set(cloud_persons), key=str.lower)
-
-    # Self-heal missing metadata from existing local folders.
-    if db is not None and local_persons:
-        db.collection("metadata").document("enrolled_faces").set(
-            {"names": persons}, merge=True
-        )
+    persons = _dedupe_face_names(list(local_persons) + list(cloud_persons))
 
     return render_template("faces.html", users=persons)
 
