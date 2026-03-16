@@ -468,6 +468,17 @@ def _get_faces_from_collection(collection_name):
 def _get_faces_from_firestore():
     names = set(_dedupe_face_names(_get_faces_meta_names()))
 
+    # Canonical source for enrolled faces is face_samples.
+    # Using many legacy collections can re-introduce old names after rename.
+    try:
+        for doc in db.collection(FACE_SAMPLES_COLLECTION).stream():
+            payload = doc.to_dict() or {}
+            normalized = _normalize_face_name(payload.get("name", ""))
+            if _is_plausible_face_name(normalized):
+                names.add(normalized)
+    except Exception:
+        pass
+
     try:
         attendance_meta = db.collection("metadata").document("attendance_persons").get()
         if attendance_meta.exists:
@@ -477,12 +488,6 @@ def _get_faces_from_firestore():
                     names.add(normalized)
     except Exception:
         pass
-
-    for coll in ("enrolled_faces", "faces", "known_faces"):
-        for name in _get_faces_from_collection(coll):
-            normalized = _normalize_face_name(name)
-            if normalized:
-                names.add(normalized)
 
     return _dedupe_face_names(names)
 
