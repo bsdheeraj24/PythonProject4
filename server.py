@@ -212,6 +212,55 @@ def _get_faces_meta_names():
     return meta_doc.to_dict().get("names", [])
 
 
+def _extract_name_candidates(payload, fallback_id=""):
+    if not isinstance(payload, dict):
+        return []
+
+    candidates = []
+    for key in ("name", "full_name", "person_name", "person", "user", "username", "id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            candidates.append(value.strip())
+
+    if not candidates and fallback_id:
+        candidates.append(str(fallback_id).strip())
+
+    return candidates
+
+
+def _get_faces_from_collection(collection_name):
+    names = set()
+    try:
+        docs = db.collection(collection_name).stream()
+        for doc in docs:
+            payload = doc.to_dict() or {}
+            for candidate in _extract_name_candidates(payload, fallback_id=doc.id):
+                if candidate:
+                    names.add(candidate)
+    except Exception:
+        return []
+    return sorted(names, key=str.lower)
+
+
+def _get_faces_from_firestore():
+    names = set(_get_faces_meta_names())
+
+    try:
+        attendance_meta = db.collection("metadata").document("attendance_persons").get()
+        if attendance_meta.exists:
+            for name in attendance_meta.to_dict().get("names", []):
+                if isinstance(name, str) and name.strip():
+                    names.add(name.strip())
+    except Exception:
+        pass
+
+    for coll in ("enrolled_faces", "faces", "known_faces"):
+        for name in _get_faces_from_collection(coll):
+            names.add(name)
+
+    return sorted(names, key=str.lower)
+
+
 def _add_face_to_meta(name):
     if not name:
         return
@@ -751,7 +800,7 @@ def faces():
         d for d in os.listdir(KNOWN_DIR)
         if os.path.isdir(os.path.join(KNOWN_DIR, d))
     ]
-    cloud_persons = _get_faces_meta_names()
+    cloud_persons = _get_faces_from_firestore()
 
     # Keep UI consistent on ephemeral filesystems by using Firebase + local union.
     persons = sorted(set(local_persons) | set(cloud_persons), key=str.lower)
