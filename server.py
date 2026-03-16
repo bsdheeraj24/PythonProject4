@@ -203,6 +203,30 @@ def _remove_person_from_meta(name):
             meta_ref.update({"names": names})
 
 
+def _replace_name_in_meta_list(doc_id, old_name, new_name):
+    old_key = _face_name_key(old_name)
+    new_normalized = _normalize_face_name(new_name)
+
+    meta_ref = db.collection("metadata").document(doc_id)
+    meta_doc = meta_ref.get()
+    names = meta_doc.to_dict().get("names", []) if meta_doc.exists else []
+
+    updated = []
+    replaced = False
+    for existing in names:
+        if _face_name_key(existing) == old_key:
+            if not replaced:
+                updated.append(new_normalized)
+                replaced = True
+            continue
+        updated.append(existing)
+
+    if not replaced:
+        updated.append(new_normalized)
+
+    meta_ref.set({"names": _dedupe_face_names(updated)}, merge=True)
+
+
 def _face_name_doc_id(name):
     return _safe_doc_token(_face_name_key(name))
 
@@ -243,6 +267,75 @@ def _delete_face_samples(name):
         for doc in docs[i:i + 500]:
             batch.delete(doc.reference)
         batch.commit()
+
+
+def _get_face_sample_docs_by_name(name):
+    normalized_name = _normalize_face_name(name)
+    target_key = _face_name_key(normalized_name)
+
+    by_id = {}
+    for doc in db.collection(FACE_SAMPLES_COLLECTION).where("name_key", "==", target_key).stream():
+        by_id[doc.id] = doc
+    for doc in db.collection(FACE_SAMPLES_COLLECTION).where("name", "==", normalized_name).stream():
+        by_id[doc.id] = doc
+    return list(by_id.values())
+
+
+def _rename_face_samples(old_name, new_name):
+    docs = _get_face_sample_docs_by_name(old_name)
+    if not docs:
+        return
+
+    new_normalized = _normalize_face_name(new_name)
+    new_key = _face_name_key(new_normalized)
+
+    for i in range(0, len(docs), 500):
+        batch = db.batch()
+        for doc in docs[i:i + 500]:
+            batch.update(doc.reference, {
+                "name": new_normalized,
+                "name_key": new_key,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            })
+        batch.commit()
+
+
+def _rename_attendance_records(old_name, new_name):
+    docs = db.collection("attendance").where("name", "==", old_name).get()
+    for i in range(0, len(docs), 500):
+        batch = db.batch()
+        for doc in docs[i:i + 500]:
+            batch.update(doc.reference, {"name": new_name})
+        batch.commit()
+
+
+def _rename_face_everywhere(old_name, new_name):
+    old_normalized = _normalize_face_name(old_name)
+    new_normalized = _normalize_face_name(new_name)
+
+    old_key = _face_name_key(old_normalized)
+    new_key = _face_name_key(new_normalized)
+
+    if old_key == new_key:
+        return
+
+    _rename_face_samples(old_normalized, new_normalized)
+
+    for i, existing in enumerate(known_names):
+        if _face_name_key(existing) == old_key:
+            known_names[i] = new_normalized
+
+    _replace_name_in_meta_list("enrolled_faces", old_normalized, new_normalized)
+    _replace_name_in_meta_list("attendance_persons", old_normalized, new_normalized)
+
+    db.collection("enrolled_faces").document(_face_name_doc_id(new_normalized)).set({
+        "name": new_normalized,
+        "name_key": new_key,
+        "updated_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
+    db.collection("enrolled_faces").document(_face_name_doc_id(old_normalized)).delete()
+
+    _rename_attendance_records(old_normalized, new_normalized)
 
 
 def _load_known_faces_from_firestore():
@@ -929,6 +1022,26 @@ def faces():
     persons = _get_faces_from_firestore()
 
     return render_template("faces.html", users=persons)
+
+
+@app.route("/rename_face", methods=["POST"])
+@login_required
+def rename_face():
+    old_name = _normalize_face_name(request.form.get("old_name", ""))
+    new_name = _normalize_face_name(request.form.get("new_name", ""))
+
+    if not _is_plausible_face_name(old_name):
+        return "Original name is invalid", 400
+
+    if not _is_plausible_face_name(new_name):
+        return "New name is invalid", 400
+
+    existing = {_face_name_key(name) for name in _get_faces_from_firestore()}
+    if _face_name_key(new_name) != _face_name_key(old_name) and _face_name_key(new_name) in existing:
+        return "New name already exists", 400
+
+    _rename_face_everywhere(old_name, new_name)
+    return redirect("/faces")
 
 @app.route("/delete/<name>")
 @login_required

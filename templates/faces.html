@@ -27,6 +27,12 @@
       <div class="card shadow-sm">
         <div class="card-body">
           <h6>{{ u }}</h6>
+          <form method="POST" action="/rename_face" class="mb-2">
+            <input type="hidden" name="old_name" value="{{ u }}">
+            <input type="text" name="new_name" class="form-control form-control-sm mb-2"
+                   value="{{ u }}" required>
+            <button type="submit" class="btn btn-sm btn-outline-primary">Save Name</button>
+          </form>
           <a href="/delete/{{u}}" class="btn btn-sm btn-danger"
              onclick="return confirm('Delete {{u}}?')">
             Delete
