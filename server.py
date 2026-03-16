@@ -204,6 +204,38 @@ def _remove_person_from_meta(name):
             meta_ref.update({"names": names})
 
 
+def _get_faces_meta_names():
+    meta_ref = db.collection("metadata").document("enrolled_faces")
+    meta_doc = meta_ref.get()
+    if not meta_doc.exists:
+        return []
+    return meta_doc.to_dict().get("names", [])
+
+
+def _add_face_to_meta(name):
+    if not name:
+        return
+
+    names = _get_faces_meta_names()
+    if name in names:
+        return
+
+    names.append(name)
+    db.collection("metadata").document("enrolled_faces").set({"names": names}, merge=True)
+
+
+def _remove_face_from_meta(name):
+    if not name:
+        return
+
+    names = _get_faces_meta_names()
+    if name not in names:
+        return
+
+    names.remove(name)
+    db.collection("metadata").document("enrolled_faces").set({"names": names}, merge=True)
+
+
 def _recover_esp32_cam_ip():
     global ESP32_CAM_IP
     if ESP32_CAM_IP or db is None:
@@ -628,6 +660,8 @@ def capture():
             with open(ENC_FILE, "wb") as f:
                 pickle.dump({"encodings": known_encodings, "names": known_names}, f)
 
+            _add_face_to_meta(name)
+
             MODE["type"] = "idle"
             MODE["name"] = None
 
@@ -713,10 +747,21 @@ def capture():
 @app.route("/faces")
 @login_required
 def faces():
-    persons = [
+    local_persons = [
         d for d in os.listdir(KNOWN_DIR)
         if os.path.isdir(os.path.join(KNOWN_DIR, d))
     ]
+    cloud_persons = _get_faces_meta_names()
+
+    # Keep UI consistent on ephemeral filesystems by using Firebase + local union.
+    persons = sorted(set(local_persons) | set(cloud_persons), key=str.lower)
+
+    # Self-heal missing metadata from existing local folders.
+    if db is not None and local_persons:
+        db.collection("metadata").document("enrolled_faces").set(
+            {"names": persons}, merge=True
+        )
+
     return render_template("faces.html", users=persons)
 
 @app.route("/delete/<name>")
@@ -733,6 +778,8 @@ def delete_face(name):
         pickle.dump({"encodings": known_encodings, "names": known_names}, f)
 
     shutil.rmtree(os.path.join(KNOWN_DIR, name), ignore_errors=True)
+
+    _remove_face_from_meta(name)
 
     # Delete attendance records from Firestore
     att_docs = db.collection("attendance").where("name", "==", name).get()
@@ -775,6 +822,8 @@ def add_face():
         with open(ENC_FILE, "wb") as f:
             pickle.dump({"encodings": known_encodings, "names": known_names}, f)
 
+        _add_face_to_meta(name)
+
         return redirect("/faces")
 
     return render_template("add_face.html")
@@ -808,6 +857,8 @@ def add_face_upload():
 
         with open(ENC_FILE, "wb") as f:
             pickle.dump({"encodings": known_encodings, "names": known_names}, f)
+
+        _add_face_to_meta(name)
 
         return redirect("/faces")
 
@@ -843,6 +894,8 @@ def add_face_capture():
 
         with open(ENC_FILE, "wb") as f:
             pickle.dump({"encodings": known_encodings, "names": known_names}, f)
+
+        _add_face_to_meta(name)
 
         return redirect("/faces")
 
