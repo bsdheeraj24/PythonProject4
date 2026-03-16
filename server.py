@@ -2,7 +2,6 @@ import os
 import csv
 import base64
 import io
-import pickle
 import shutil
 import json
 import binascii
@@ -32,8 +31,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # ================= CONFIG =================
-ENC_FILE = "known_faces_encodings.pkl"
 KNOWN_DIR = "known_faces"
+FACE_SAMPLES_COLLECTION = "face_samples"
 ENROLL_SAMPLES = 10
 MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "60"))
 MATCH_THRESHOLD = float(os.environ.get("MATCH_THRESHOLD", "0.58"))
@@ -204,6 +203,85 @@ def _remove_person_from_meta(name):
             meta_ref.update({"names": names})
 
 
+def _face_name_doc_id(name):
+    return _safe_doc_token(_face_name_key(name))
+
+
+def _image_to_base64_jpeg(img_pil, max_size=(480, 480), quality=75):
+    sample = img_pil.copy()
+    sample.thumbnail(max_size)
+    output = io.BytesIO()
+    sample.save(output, format="JPEG", quality=quality, optimize=True)
+    return base64.b64encode(output.getvalue()).decode("utf-8")
+
+
+def _store_face_sample(name, encoding_vec, img_pil, source):
+    normalized_name = _normalize_face_name(name)
+    if not _is_plausible_face_name(normalized_name):
+        return
+
+    db.collection(FACE_SAMPLES_COLLECTION).add({
+        "name": normalized_name,
+        "name_key": _face_name_key(normalized_name),
+        "encoding": np.asarray(encoding_vec, dtype=np.float64).tolist(),
+        "image_b64": _image_to_base64_jpeg(img_pil),
+        "source": source,
+        "created_at": firestore.SERVER_TIMESTAMP,
+    })
+
+
+def _delete_face_samples(name):
+    normalized_name = _normalize_face_name(name)
+    target_key = _face_name_key(normalized_name)
+
+    docs = db.collection(FACE_SAMPLES_COLLECTION).where("name_key", "==", target_key).get()
+    if not docs:
+        docs = db.collection(FACE_SAMPLES_COLLECTION).where("name", "==", normalized_name).get()
+
+    for i in range(0, len(docs), 500):
+        batch = db.batch()
+        for doc in docs[i:i + 500]:
+            batch.delete(doc.reference)
+        batch.commit()
+
+
+def _load_known_faces_from_firestore():
+    global known_encodings, known_names
+
+    encodings = []
+    names = []
+
+    if db is None:
+        known_encodings = encodings
+        known_names = names
+        return
+
+    docs = db.collection(FACE_SAMPLES_COLLECTION).stream()
+    for doc in docs:
+        payload = doc.to_dict() or {}
+        name = _normalize_face_name(payload.get("name", ""))
+        encoding = payload.get("encoding")
+
+        if not _is_plausible_face_name(name):
+            continue
+        if not isinstance(encoding, list) or len(encoding) == 0:
+            continue
+
+        try:
+            vector = np.asarray(encoding, dtype=np.float64)
+        except (ValueError, TypeError):
+            continue
+
+        if vector.ndim != 1:
+            continue
+
+        encodings.append(vector)
+        names.append(name)
+
+    known_encodings = encodings
+    known_names = names
+
+
 def _get_faces_meta_names():
     meta_ref = db.collection("metadata").document("enrolled_faces")
     meta_doc = meta_ref.get()
@@ -318,6 +396,11 @@ def _add_face_to_meta(name):
 
     names.append(normalized_name)
     db.collection("metadata").document("enrolled_faces").set({"names": _dedupe_face_names(names)}, merge=True)
+    db.collection("enrolled_faces").document(_face_name_doc_id(normalized_name)).set({
+        "name": normalized_name,
+        "name_key": _face_name_key(normalized_name),
+        "updated_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
 
 
 def _remove_face_from_meta(name):
@@ -332,6 +415,7 @@ def _remove_face_from_meta(name):
         return
 
     db.collection("metadata").document("enrolled_faces").set({"names": kept}, merge=True)
+    db.collection("enrolled_faces").document(_face_name_doc_id(normalized_name)).delete()
 
 
 def _recover_esp32_cam_ip():
@@ -546,14 +630,9 @@ def load_users():
     return users
 
 # ================= LOAD ENCODINGS =================
-if os.path.exists(ENC_FILE):
-    with open(ENC_FILE, "rb") as f:
-        data = pickle.load(f)
-        known_encodings = data.get("encodings", [])
-        known_names = data.get("names", [])
-else:
-    known_encodings = []
-    known_names = []
+known_encodings = []
+known_names = []
+_load_known_faces_from_firestore()
 
 # ================= LOGIN REQUIRED =================
 def login_required(f):
@@ -739,25 +818,17 @@ def capture():
 
     # -------- ENROLL --------
     if MODE["type"] == "enroll":
-        name = MODE["name"]
+        name = _normalize_face_name(MODE["name"])
         if not _is_plausible_face_name(name):
             return jsonify({"status": "NO_NAME", "error": "Invalid or missing name"})
 
-        person_dir = os.path.join(KNOWN_DIR, name)
-        os.makedirs(person_dir, exist_ok=True)
-
-        # ✅ Save JPG samples
-        img_path = os.path.join(person_dir, f"img_{ENROLL_COUNT + 1}.jpg")
-        img_pil.save(img_path, "JPEG")
+        _store_face_sample(name, face, img_pil, source="esp32_enroll")
 
         known_encodings.append(face)
         known_names.append(name)
         ENROLL_COUNT += 1
 
         if ENROLL_COUNT >= ENROLL_SAMPLES:
-            with open(ENC_FILE, "wb") as f:
-                pickle.dump({"encodings": known_encodings, "names": known_names}, f)
-
             _add_face_to_meta(name)
 
             MODE["type"] = "idle"
@@ -845,14 +916,7 @@ def capture():
 @app.route("/faces")
 @login_required
 def faces():
-    local_persons = [
-        d for d in os.listdir(KNOWN_DIR)
-        if os.path.isdir(os.path.join(KNOWN_DIR, d))
-    ]
-    cloud_persons = _get_faces_from_firestore()
-
-    # Keep UI consistent on ephemeral filesystems by using Firebase + local union.
-    persons = _dedupe_face_names(list(local_persons) + list(cloud_persons))
+    persons = _get_faces_from_firestore()
 
     return render_template("faces.html", users=persons)
 
@@ -861,15 +925,15 @@ def faces():
 def delete_face(name):
     global known_encodings, known_names
 
-    idxs = [i for i, n in enumerate(known_names) if n == name]
+    normalized_name = _normalize_face_name(name)
+    target_key = _face_name_key(normalized_name)
+    idxs = [i for i, n in enumerate(known_names) if _face_name_key(n) == target_key]
     for i in sorted(idxs, reverse=True):
         known_encodings.pop(i)
         known_names.pop(i)
 
-    with open(ENC_FILE, "wb") as f:
-        pickle.dump({"encodings": known_encodings, "names": known_names}, f)
-
-    shutil.rmtree(os.path.join(KNOWN_DIR, name), ignore_errors=True)
+    _delete_face_samples(normalized_name)
+    shutil.rmtree(os.path.join(KNOWN_DIR, normalized_name), ignore_errors=True)
 
     _remove_face_from_meta(name)
 
@@ -891,10 +955,10 @@ def add_face():
     global known_encodings, known_names
 
     if request.method == "POST":
-        name = request.form.get("name", "").strip()
+        name = _normalize_face_name(request.form.get("name", ""))
         file = request.files.get("image")
 
-        if not name or not file:
+        if not _is_plausible_face_name(name) or not file:
             return "Name or image missing"
 
         img_pil = Image.open(file.stream).convert("RGB")
@@ -904,15 +968,9 @@ def add_face():
         if not enc:
             return "No face detected. Use a clear photo."
 
-        person_dir = os.path.join(KNOWN_DIR, name)
-        os.makedirs(person_dir, exist_ok=True)
-        img_pil.save(os.path.join(person_dir, "profile.jpg"), "JPEG")
-
+        _store_face_sample(name, enc[0], img_pil, source="web_single")
         known_encodings.append(enc[0])
         known_names.append(name)
-
-        with open(ENC_FILE, "wb") as f:
-            pickle.dump({"encodings": known_encodings, "names": known_names}, f)
 
         _add_face_to_meta(name)
 
@@ -927,28 +985,21 @@ def add_face_upload():
     global known_encodings, known_names
 
     if request.method == "POST":
-        name = request.form.get("name", "").strip()
+        name = _normalize_face_name(request.form.get("name", ""))
         file = request.files.get("image")
 
-        if not name or not file:
+        if not _is_plausible_face_name(name) or not file:
             return "Name or image missing"
-
-        person_dir = os.path.join(KNOWN_DIR, name)
-        os.makedirs(person_dir, exist_ok=True)
 
         img_pil = Image.open(file.stream).convert("RGB")
         img_pil.thumbnail((640, 480))
 
         for i in range(1, 11):
-            img_path = os.path.join(person_dir, f"img_{i}.jpg")
-            img_pil.save(img_path, "JPEG")
             enc = face_recognition.face_encodings(np.array(img_pil))
             if enc:
+                _store_face_sample(name, enc[0], img_pil, source="web_upload")
                 known_encodings.append(enc[0])
                 known_names.append(name)
-
-        with open(ENC_FILE, "wb") as f:
-            pickle.dump({"encodings": known_encodings, "names": known_names}, f)
 
         _add_face_to_meta(name)
 
@@ -963,29 +1014,21 @@ def add_face_capture():
     global known_encodings, known_names
 
     if request.method == "POST":
-        name = request.form.get("name", "").strip()
+        name = _normalize_face_name(request.form.get("name", ""))
         files = request.files.getlist("images")
 
-        if not name or len(files) != 10:
+        if not _is_plausible_face_name(name) or len(files) != 10:
             return "10 images required"
-
-        person_dir = os.path.join(KNOWN_DIR, name)
-        os.makedirs(person_dir, exist_ok=True)
 
         for i, file in enumerate(files, start=1):
             img_pil = Image.open(file.stream).convert("RGB")
             img_pil.thumbnail((640, 480))
 
-            img_path = os.path.join(person_dir, f"img_{i}.jpg")
-            img_pil.save(img_path, "JPEG")
-
             enc = face_recognition.face_encodings(np.array(img_pil))
             if enc:
+                _store_face_sample(name, enc[0], img_pil, source="web_capture")
                 known_encodings.append(enc[0])
                 known_names.append(name)
-
-        with open(ENC_FILE, "wb") as f:
-            pickle.dump({"encodings": known_encodings, "names": known_names}, f)
 
         _add_face_to_meta(name)
 
