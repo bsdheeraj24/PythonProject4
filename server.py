@@ -293,7 +293,17 @@ def _get_faces_meta_names():
 def _normalize_face_name(name):
     if not isinstance(name, str):
         return ""
-    return " ".join(name.strip().split())
+
+    normalized = " ".join(name.strip().split())
+
+    # Some device payloads wrap enroll names as p<Name>t. Strip this wrapper
+    # conservatively to avoid altering legitimate names.
+    if len(normalized) > 2 and normalized[:1].lower() == "p" and normalized[-1:].lower() == "t":
+        inner = normalized[1:-1].strip()
+        if inner and inner[0].isupper():
+            normalized = inner
+
+    return normalized
 
 
 def _face_name_key(name):
