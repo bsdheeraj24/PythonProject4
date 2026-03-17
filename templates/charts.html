@@ -15,7 +15,17 @@
 <div class="container mt-4 text-center">
   <div class="card shadow">
     <div class="card-body">
+      <form method="GET" action="/charts" class="row g-2 justify-content-center mb-3">
+        <div class="col-auto">
+          <input type="date" name="date" class="form-control" value="{{ chart_date }}">
+        </div>
+        <div class="col-auto">
+          <button class="btn btn-primary">Apply</button>
+        </div>
+      </form>
+
       <h5>Daily IN Count</h5>
+      <div class="text-muted">Date: {{ chart_pretty_date }}</div>
       <img src="/static/chart.png" class="img-fluid mt-3">
     </div>
   </div>

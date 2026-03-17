@@ -1447,23 +1447,38 @@ def export_person(name):
 @app.route("/charts")
 @login_required
 def charts():
+    selected_date = (request.args.get("date") or "").strip()
+    if not selected_date:
+        selected_date = now_ist().strftime("%Y-%m-%d")
+    else:
+        try:
+            datetime.strptime(selected_date, "%Y-%m-%d")
+        except ValueError:
+            selected_date = now_ist().strftime("%Y-%m-%d")
+
     docs = db.collection("attendance").where("status", "==", "IN").get()
 
     counts = {}
     for doc in docs:
-        n = doc.to_dict()["name"]
+        payload = doc.to_dict()
+        local_date, _ = _attendance_local_date_time(payload)
+        if local_date != selected_date:
+            continue
+
+        n = payload.get("name", "Unknown")
         counts[n] = counts.get(n, 0) + 1
 
-    labels = list(counts.keys())
+    labels = sorted(counts.keys())
     values = list(counts.values())
+    pretty_date = datetime.strptime(selected_date, "%Y-%m-%d").strftime("%d-%m-%Y")
 
     plt.clf()
     if labels:
         plt.bar(labels, values)
-    plt.title("Daily IN Count")
+    plt.title(f"Daily IN Count ({pretty_date})")
     plt.savefig("static/chart.png")
 
-    return render_template("charts.html")
+    return render_template("charts.html", chart_date=selected_date, chart_pretty_date=pretty_date)
 
 # ================= RUN =================
 _start_late_alert_worker()
