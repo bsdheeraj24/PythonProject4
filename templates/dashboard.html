@@ -57,6 +57,10 @@
   <div>
     {% if is_admin %}
     <a href="/users" class="btn btn-sm btn-outline-light me-2">👥 Users</a>
+    {% elif no_admin %}
+    <form method="POST" action="/setup_admin" class="d-inline">
+      <button class="btn btn-sm btn-warning me-2 fw-semibold">⚙ Setup Admin</button>
+    </form>
     {% endif %}
     <a href="/logout" class="btn btn-sm btn-outline-light">Logout</a>
   </div>

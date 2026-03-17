@@ -845,9 +845,30 @@ def logout():
 def dashboard():
     stream_url = _current_stream_url()
     is_admin = session.get("role") == "admin"
-    return render_template("dashboard.html", stream_url=stream_url, is_admin=is_admin)
+    # Show setup button only if no admin exists yet
+    has_admin = any(
+        u.to_dict().get("role") == "admin"
+        for u in db.collection("users").stream()
+    ) if db is not None else True
+    return render_template("dashboard.html", stream_url=stream_url, is_admin=is_admin, no_admin=not has_admin)
 
 # ================= USERS =================
+@app.route("/setup_admin", methods=["POST"])
+@login_required
+def setup_admin():
+    """One-time bootstrap: promotes the logged-in user to admin when no admin exists yet."""
+    admins = [
+        u for u in db.collection("users").stream()
+        if u.to_dict().get("role") == "admin"
+    ]
+    if admins:
+        return redirect("/dashboard")
+
+    current_user = session.get("user")
+    db.collection("users").document(current_user).update({"role": "admin"})
+    session["role"] = "admin"
+    return redirect("/dashboard")
+
 @app.route("/users", methods=["GET", "POST"])
 @login_required
 def manage_users():
