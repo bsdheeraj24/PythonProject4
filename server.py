@@ -35,6 +35,7 @@ KNOWN_DIR = "known_faces"
 FACE_SAMPLES_COLLECTION = "face_samples"
 ENROLL_SAMPLES = 10
 MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "60"))
+POST_ENROLL_GAP_SECONDS = int(os.environ.get("POST_ENROLL_GAP_SECONDS", "60"))
 MATCH_THRESHOLD = float(os.environ.get("MATCH_THRESHOLD", "0.58"))
 NO_FACE_GRACE_SECONDS = float(os.environ.get("NO_FACE_GRACE_SECONDS", "2.0"))
 STATUS_HOLD_SECONDS = float(os.environ.get("STATUS_HOLD_SECONDS", "2.5"))
@@ -227,6 +228,7 @@ LAST_RESULT = {
 }
 LAST_FACE_SEEN_AT = None
 LAST_RESULT_SET_AT = now_ist()
+LAST_ENROLL_COMPLETED_AT = {}
 
 # ================= HELPERS =================
 def _remove_person_from_meta(name):
@@ -988,7 +990,7 @@ def last_recognition():
 # ================= CAPTURE (from ESP32-CAM) =================
 @app.route("/capture", methods=["POST"])
 def capture():
-    global ENROLL_COUNT, LAST_RESULT, LAST_FACE_SEEN_AT
+    global ENROLL_COUNT, LAST_RESULT, LAST_FACE_SEEN_AT, LAST_ENROLL_COMPLETED_AT
     global known_encodings, known_names
 
     data = request.get_json(force=True, silent=True) or {}
@@ -1046,6 +1048,7 @@ def capture():
 
         if ENROLL_COUNT >= ENROLL_SAMPLES:
             _add_face_to_meta(name)
+            LAST_ENROLL_COMPLETED_AT[_face_name_key(name)] = now_ist()
 
             MODE["type"] = "idle"
             MODE["name"] = None
@@ -1074,6 +1077,14 @@ def capture():
     confidence = max(0, min(99, int((1.0 - best_distance) * 100)))
 
     now = now_ist()
+    enroll_done_at = LAST_ENROLL_COMPLETED_AT.get(_face_name_key(name))
+    if enroll_done_at is not None:
+        enroll_gap = (now - enroll_done_at).total_seconds()
+        if enroll_gap < POST_ENROLL_GAP_SECONDS:
+            remaining = int(POST_ENROLL_GAP_SECONDS - enroll_gap)
+            _set_last_result({"status": "WAIT", "name": name, "entry": "", "confidence": 0})
+            return jsonify({"status": "WAIT", "seconds": max(1, remaining)})
+
     today = now.strftime("%Y-%m-%d")
     entry = "IN"
 
