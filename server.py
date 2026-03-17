@@ -45,6 +45,37 @@ def now_ist():
     return datetime.now(timezone.utc).astimezone(IST).replace(tzinfo=None)
 
 
+def _to_ist_naive(value):
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(IST).replace(tzinfo=None)
+
+
+def _attendance_local_datetime(payload):
+    local_dt = _to_ist_naive(payload.get("timestamp"))
+    if local_dt is not None:
+        return local_dt
+
+    date_value = (payload.get("date") or "").strip()
+    time_value = (payload.get("time") or "").strip()
+    if not date_value or not time_value:
+        return None
+
+    try:
+        return datetime.strptime(f"{date_value} {time_value}", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _attendance_local_date_time(payload):
+    local_dt = _attendance_local_datetime(payload)
+    if local_dt is not None:
+        return local_dt.strftime("%Y-%m-%d"), local_dt.strftime("%H:%M:%S")
+    return payload.get("date", ""), payload.get("time", "")
+
+
 def _is_true(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -586,7 +617,6 @@ def _get_first_in_time_for_date(person_name, date_value):
     docs = (
         db.collection("attendance")
         .where("name", "==", person_name)
-        .where("date", "==", date_value)
         .where("status", "==", "IN")
         .get()
     )
@@ -594,12 +624,16 @@ def _get_first_in_time_for_date(person_name, date_value):
     if not docs:
         return None
 
-    rows = sorted((doc.to_dict() for doc in docs), key=lambda d: d.get("time", ""))
-    first_time = rows[0].get("time", "")
-    if not first_time:
+    local_times = []
+    for doc in docs:
+        local_dt = _attendance_local_datetime(doc.to_dict())
+        if local_dt is not None and local_dt.strftime("%Y-%m-%d") == date_value:
+            local_times.append(local_dt)
+
+    if not local_times:
         return None
 
-    return datetime.strptime(first_time, "%H:%M:%S").time()
+    return min(local_times).time()
 
 
 def _check_late_status(person_name, now_dt):
@@ -975,25 +1009,25 @@ def capture():
     entry = "IN"
 
     # Query today's entries for this person
-    today_docs = (
-        db.collection("attendance")
-        .where("name", "==", name)
-        .where("date", "==", today)
-        .get()
-    )
+    today_docs = db.collection("attendance").where("name", "==", name).get()
+    today_docs = [
+        doc.to_dict()
+        for doc in today_docs
+        if _attendance_local_date_time(doc.to_dict())[0] == today
+    ]
 
     # Sort in Python to avoid requiring a Firestore composite index.
     today_docs = sorted(
         today_docs,
-        key=lambda d: d.to_dict().get("time", "")
+        key=lambda d: _attendance_local_datetime(d) or datetime.min
     )
 
     if today_docs:
-        last_doc = today_docs[-1].to_dict()
+        last_doc = today_docs[-1]
         last_status = last_doc["status"]
-        last_time = datetime.strptime(
-            f"{last_doc['date']} {last_doc['time']}", "%Y-%m-%d %H:%M:%S"
-        )
+        last_time = _attendance_local_datetime(last_doc)
+        if last_time is None:
+            last_time = now
         diff = (now - last_time).total_seconds()
 
         if diff < MIN_GAP_SECONDS:
@@ -1185,16 +1219,26 @@ def attendance_person(name):
         .where("name", "==", name)
         .get()
     )
+    rows = []
+    for doc in docs:
+        payload = doc.to_dict()
+        local_date, local_time = _attendance_local_date_time(payload)
+        rows.append({
+            "date": local_date,
+            "time": local_time,
+            "status": payload.get("status", ""),
+            "sort_dt": _attendance_local_datetime(payload),
+        })
+
     # Sort in Python to avoid requiring a Firestore composite index
-    docs = sorted(docs, key=lambda d: (d.to_dict().get("date", ""), d.to_dict().get("time", "")))
+    rows = sorted(rows, key=lambda d: (d["sort_dt"] or datetime.min, d["status"]))
 
     grouped = OrderedDict()
-    for doc in docs:
-        d = doc.to_dict()
-        date = d["date"]
+    for row in rows:
+        date = row["date"]
         if date not in grouped:
             grouped[date] = []
-        grouped[date].append(d)
+        grouped[date].append(row)
 
     records = []
     for date, entries in grouped.items():
@@ -1247,7 +1291,7 @@ def delete_attendance_by_date():
     docs = db.collection("attendance").where("name", "==", name).get()
     docs = [
         doc for doc in docs
-        if from_date <= doc.to_dict().get("date", "") <= to_date
+        if from_date <= _attendance_local_date_time(doc.to_dict())[0] <= to_date
     ]
 
     for i in range(0, len(docs), 500):
@@ -1286,18 +1330,29 @@ def export_person(name):
     if not docs:
         return "No attendance data found"
 
-    rows = [doc.to_dict() for doc in docs]
-    rows = sorted(rows, key=lambda d: (d.get("date", ""), d.get("time", "")))
+    rows = []
+    for doc in docs:
+        payload = doc.to_dict()
+        local_date, local_time = _attendance_local_date_time(payload)
+        rows.append({
+            "date": local_date,
+            "time": local_time,
+            "name": payload.get("name", name),
+            "status": payload.get("status", ""),
+            "sort_dt": _attendance_local_datetime(payload),
+        })
+
+    rows = sorted(rows, key=lambda d: (d["sort_dt"] or datetime.min, d["status"]))
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["Date", "Time", "Name", "Status"])
     for row in rows:
         writer.writerow([
-            row.get("date", ""),
-            row.get("time", ""),
-            row.get("name", name),
-            row.get("status", ""),
+            row["date"],
+            row["time"],
+            row["name"],
+            row["status"],
         ])
 
     output.seek(0)
