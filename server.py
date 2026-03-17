@@ -877,6 +877,53 @@ def delete_user(username):
     db.collection("users").document(username).delete()
     return redirect("/users")
 
+@app.route("/change_credentials", methods=["POST"])
+@login_required
+def change_credentials():
+    if session.get("role") != "admin":
+        return "Access denied"
+
+    current_password = request.form.get("current_password", "").strip()
+    new_username     = request.form.get("new_username", "").strip()
+    new_password     = request.form.get("new_password", "").strip()
+    confirm_password = request.form.get("confirm_password", "").strip()
+
+    current_user = session.get("user")
+    doc = db.collection("users").document(current_user).get()
+    if not doc.exists:
+        users = load_users()
+        return render_template("users.html", users=users, cred_error="Current user not found.")
+
+    user_data = doc.to_dict()
+    if not check_password_hash(user_data["password_hash"], current_password):
+        users = load_users()
+        return render_template("users.html", users=users, cred_error="Current password is incorrect.")
+
+    if new_password and new_password != confirm_password:
+        users = load_users()
+        return render_template("users.html", users=users, cred_error="New passwords do not match.")
+
+    if not new_username and not new_password:
+        users = load_users()
+        return render_template("users.html", users=users, cred_error="Provide a new username or password.")
+
+    target_username = new_username if new_username else current_user
+    updated_hash    = generate_password_hash(new_password) if new_password else user_data["password_hash"]
+
+    if new_username and new_username != current_user:
+        # Create new doc, delete old one
+        db.collection("users").document(new_username).set({
+            "password_hash": updated_hash,
+            "role": user_data.get("role", "admin"),
+        })
+        db.collection("users").document(current_user).delete()
+        session["user"] = new_username
+    else:
+        db.collection("users").document(current_user).update({"password_hash": updated_hash})
+
+    users = load_users()
+    return render_template("users.html", users=users, cred_success="Credentials updated successfully.")
+
 # ================= MODE (from ESP32 Nextion) =================
 @app.route("/mode", methods=["POST"])
 def set_mode():
