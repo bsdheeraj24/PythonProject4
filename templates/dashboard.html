@@ -55,7 +55,7 @@
 <nav class="navbar navbar-dark bg-primary shadow px-3">
   <span class="navbar-brand fw-bold">🎓 Smart Attendance System</span>
   <div>
-    {% if session.role == "admin" %}
+    {% if is_admin %}
     <a href="/users" class="btn btn-sm btn-outline-light me-2">👥 Users</a>
     {% endif %}
     <a href="/logout" class="btn btn-sm btn-outline-light">Logout</a>

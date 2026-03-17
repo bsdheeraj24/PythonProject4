@@ -827,7 +827,7 @@ def login():
             user = doc.to_dict()
             if check_password_hash(user["password_hash"], password):
                 session["user"] = username
-                session["role"] = user["role"]
+                session["role"] = user.get("role", "user")
                 return redirect("/dashboard")
 
         return render_template("login.html", error="Invalid credentials")
@@ -844,7 +844,8 @@ def logout():
 @login_required
 def dashboard():
     stream_url = _current_stream_url()
-    return render_template("dashboard.html", stream_url=stream_url)
+    is_admin = session.get("role") == "admin"
+    return render_template("dashboard.html", stream_url=stream_url, is_admin=is_admin)
 
 # ================= USERS =================
 @app.route("/users", methods=["GET", "POST"])
