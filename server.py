@@ -10,7 +10,7 @@ import ssl
 import threading
 import time
 from collections import OrderedDict
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta, timezone
 from email.message import EmailMessage
 from functools import wraps
 
@@ -38,6 +38,11 @@ MIN_GAP_SECONDS = int(os.environ.get("MIN_GAP_SECONDS", "60"))
 MATCH_THRESHOLD = float(os.environ.get("MATCH_THRESHOLD", "0.58"))
 NO_FACE_GRACE_SECONDS = float(os.environ.get("NO_FACE_GRACE_SECONDS", "2.0"))
 STATUS_HOLD_SECONDS = float(os.environ.get("STATUS_HOLD_SECONDS", "2.5"))
+IST = timezone(timedelta(hours=5, minutes=30), name="IST")
+
+
+def now_ist():
+    return datetime.now(timezone.utc).astimezone(IST).replace(tzinfo=None)
 
 
 def _is_true(value):
@@ -190,7 +195,7 @@ LAST_RESULT = {
     "confidence": 0
 }
 LAST_FACE_SEEN_AT = None
-LAST_RESULT_SET_AT = datetime.now()
+LAST_RESULT_SET_AT = now_ist()
 
 # ================= HELPERS =================
 def _remove_person_from_meta(name):
@@ -549,7 +554,7 @@ def _current_stream_url():
 def _set_last_result(data):
     global LAST_RESULT, LAST_RESULT_SET_AT
     LAST_RESULT = data
-    LAST_RESULT_SET_AT = datetime.now()
+    LAST_RESULT_SET_AT = now_ist()
 
 
 def _hold_last_result_for_esp32():
@@ -557,7 +562,7 @@ def _hold_last_result_for_esp32():
     if MODE.get("type") != "attend" or LAST_RESULT.get("status") not in holdable_statuses:
         return None
 
-    age = (datetime.now() - LAST_RESULT_SET_AT).total_seconds()
+    age = (now_ist() - LAST_RESULT_SET_AT).total_seconds()
     if age <= STATUS_HOLD_SECONDS:
         return LAST_RESULT
 
@@ -568,7 +573,7 @@ def _hold_previous_result_on_no_face():
     if MODE.get("type") != "attend" or LAST_FACE_SEEN_AT is None:
         return None
 
-    age = (datetime.now() - LAST_FACE_SEEN_AT).total_seconds()
+    age = (now_ist() - LAST_FACE_SEEN_AT).total_seconds()
     if age <= NO_FACE_GRACE_SECONDS and LAST_RESULT.get("status") in {
         "ATTENDANCE_MARKED", "WAIT", "UNKNOWN", "NO_KNOWN_FACES"
     }:
@@ -663,7 +668,7 @@ def _late_alert_worker():
                 time.sleep(60)
                 continue
 
-            now_dt = datetime.now()
+            now_dt = now_ist()
             cutoff_dt = now_dt.replace(
                 hour=LATE_ALERT_CUTOFF.hour,
                 minute=LATE_ALERT_CUTOFF.minute,
@@ -922,7 +927,7 @@ def capture():
         return jsonify(LAST_RESULT)
 
     face = encodings[0]
-    LAST_FACE_SEEN_AT = datetime.now()
+    LAST_FACE_SEEN_AT = now_ist()
 
     # -------- ENROLL --------
     if MODE["type"] == "enroll":
@@ -965,7 +970,7 @@ def capture():
     name = known_names[best_idx]
     confidence = max(0, min(99, int((1.0 - best_distance) * 100)))
 
-    now = datetime.now()
+    now = now_ist()
     today = now.strftime("%Y-%m-%d")
     entry = "IN"
 
