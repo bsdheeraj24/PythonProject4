@@ -1345,6 +1345,37 @@ def add_face_capture():
 
     return render_template("add_face_capture.html")
 
+
+@app.route("/add_face_capture_chunk", methods=["POST"])
+@login_required
+def add_face_capture_chunk():
+    global known_encodings, known_names
+
+    name = _normalize_face_name(request.form.get("name", ""))
+    file = request.files.get("image")
+
+    if not _is_plausible_face_name(name):
+        return jsonify({"status": "error", "message": "Invalid name"}), 400
+    if not file:
+        return jsonify({"status": "error", "message": "Image is required"}), 400
+
+    try:
+        img_pil = Image.open(file.stream).convert("RGB")
+    except Exception:
+        return jsonify({"status": "error", "message": "Corrupt image"}), 400
+
+    img_pil.thumbnail((480, 360))
+    enc = face_recognition.face_encodings(np.array(img_pil))
+    if not enc:
+        return jsonify({"status": "no_face"}), 200
+
+    _store_face_sample(name, enc[0], img_pil, source="web_capture_chunk")
+    known_encodings.append(enc[0])
+    known_names.append(name)
+    _add_face_to_meta(name)
+
+    return jsonify({"status": "saved"}), 200
+
 # ================= ATTENDANCE =================
 @app.route("/attendance")
 @login_required

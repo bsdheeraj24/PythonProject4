@@ -104,10 +104,30 @@ async function startCapture() {
 
   hiddenName.value = name;
 
-  // Clear previous file inputs if user retries without page reload.
-  form.querySelectorAll('input[name="images"]').forEach(node => node.remove());
-
   let captured = 0;
+  let uploaded = 0;
+  let noFace = 0;
+
+  async function uploadFrame(blob, index) {
+    const fd = new FormData();
+    fd.append("name", name);
+    fd.append("image", new File([blob], `img_${index}.jpg`, { type: "image/jpeg" }));
+
+    const res = await fetch("/add_face_capture_chunk", {
+      method: "POST",
+      body: fd,
+      credentials: "same-origin"
+    });
+
+    if (!res.ok) {
+      throw new Error(`Upload failed (${res.status})`);
+    }
+
+    const data = await res.json();
+    if (data.status === "saved") uploaded++;
+    if (data.status === "no_face") noFace++;
+  }
+
   for (let i = 1; i <= 10; i++) {
     captureStatus.textContent = `Capturing image ${i}/10...`;
     const blob = await captureBlob();
@@ -119,15 +139,16 @@ async function startCapture() {
       return;
     }
 
-    const file = new File([blob], `img_${i}.jpg`, { type: "image/jpeg" });
-    const input = document.createElement("input");
-    input.type = "file";
-    input.name = "images";
-
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    input.files = dt.files;
-    form.appendChild(input);
+    captureStatus.textContent = `Uploading image ${i}/10...`;
+    try {
+      await uploadFrame(blob, i);
+    } catch (err) {
+      captureBtn.disabled = false;
+      captureBtn.textContent = "📷 Start Capture";
+      captureStatus.textContent = "Upload failed. Please try again.";
+      alert("Upload failed during capture. Please try again.");
+      return;
+    }
 
     captured++;
     await sleep(180);
@@ -141,8 +162,17 @@ async function startCapture() {
     return;
   }
 
-  captureStatus.textContent = "Uploading 10 images...";
-  form.submit();
+  if (uploaded === 0) {
+    captureBtn.disabled = false;
+    captureBtn.textContent = "📷 Start Capture";
+    captureStatus.textContent = "No face detected. Please retry.";
+    alert("No clear face detected in captured images. Please try again with better lighting.");
+    return;
+  }
+
+  const skipped = noFace > 0 ? ` (${noFace} without clear face skipped)` : "";
+  const msg = `Added ${uploaded} face images for ${name}${skipped}.`;
+  window.location.href = `/faces?message=${encodeURIComponent(msg)}`;
 }
 </script>
 
