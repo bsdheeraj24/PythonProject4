@@ -37,11 +37,13 @@
       </div>
 
       <div class="d-grid">
-        <button class="btn btn-primary btn-lg"
+        <button id="captureBtn" class="btn btn-primary btn-lg"
                 onclick="startCapture()">
           📷 Start Capture
         </button>
       </div>
+
+      <div id="captureStatus" class="small text-muted text-center mt-2"></div>
 
       <form method="POST" enctype="multipart/form-data" id="form">
         <input type="hidden" name="name" id="hiddenName">
@@ -56,47 +58,91 @@
 const video = document.getElementById("video");
 const form = document.getElementById("form");
 const hiddenName = document.getElementById("hiddenName");
+const captureBtn = document.getElementById("captureBtn");
+const captureStatus = document.getElementById("captureStatus");
 
 navigator.mediaDevices.getUserMedia({ video: true })
   .then(stream => video.srcObject = stream)
   .catch(() => alert("Camera access blocked. Use localhost or HTTPS"));
 
-function startCapture() {
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function captureBlob() {
+  const sourceW = video.videoWidth || 640;
+  const sourceH = video.videoHeight || 480;
+
+  const targetW = 640;
+  const targetH = Math.round((sourceH / sourceW) * targetW) || 480;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = targetW;
+  canvas.height = targetH;
+  canvas.getContext("2d").drawImage(video, 0, 0, targetW, targetH);
+
+  return new Promise(resolve => {
+    canvas.toBlob(blob => resolve(blob), "image/jpeg", 0.8);
+  });
+}
+
+async function startCapture() {
   const name = document.getElementById("name").value.trim();
   if (!name) {
     alert("Please enter name");
     return;
   }
 
+  if (!video.videoWidth || !video.videoHeight) {
+    alert("Camera is not ready yet. Please wait 1-2 seconds and try again.");
+    return;
+  }
+
+  captureBtn.disabled = true;
+  captureBtn.textContent = "Capturing...";
+  captureStatus.textContent = "Preparing capture...";
+
   hiddenName.value = name;
-  let count = 0;
 
-  const interval = setInterval(() => {
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext("2d").drawImage(video, 0, 0);
+  // Clear previous file inputs if user retries without page reload.
+  form.querySelectorAll('input[name="images"]').forEach(node => node.remove());
 
-    canvas.toBlob(blob => {
-      const file = new File([blob], `img_${count+1}.jpg`, { type: "image/jpeg" });
-
-      const input = document.createElement("input");
-      input.type = "file";
-      input.name = "images";
-
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      input.files = dt.files;
-
-      form.appendChild(input);
-    }, "image/jpeg");
-
-    count++;
-    if (count === 10) {
-      clearInterval(interval);
-      setTimeout(() => form.submit(), 500);
+  let captured = 0;
+  for (let i = 1; i <= 10; i++) {
+    captureStatus.textContent = `Capturing image ${i}/10...`;
+    const blob = await captureBlob();
+    if (!blob || blob.size === 0) {
+      captureBtn.disabled = false;
+      captureBtn.textContent = "📷 Start Capture";
+      captureStatus.textContent = "Capture failed. Please try again.";
+      alert("Capture failed for one frame. Please try again.");
+      return;
     }
-  }, 200);
+
+    const file = new File([blob], `img_${i}.jpg`, { type: "image/jpeg" });
+    const input = document.createElement("input");
+    input.type = "file";
+    input.name = "images";
+
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    form.appendChild(input);
+
+    captured++;
+    await sleep(180);
+  }
+
+  if (captured !== 10) {
+    captureBtn.disabled = false;
+    captureBtn.textContent = "📷 Start Capture";
+    captureStatus.textContent = "Could not capture 10 images. Please retry.";
+    alert("Could not capture 10 images. Please retry.");
+    return;
+  }
+
+  captureStatus.textContent = "Uploading 10 images...";
+  form.submit();
 }
 </script>
 

@@ -13,6 +13,7 @@ from collections import OrderedDict
 from datetime import datetime, time as dt_time, timedelta, timezone
 from email.message import EmailMessage
 from functools import wraps
+from urllib.parse import quote_plus
 
 from flask import (
     Flask, request, jsonify, render_template,
@@ -317,6 +318,10 @@ def _get_face_sample_docs_by_name(name):
     for doc in db.collection(FACE_SAMPLES_COLLECTION).where("name", "==", normalized_name).stream():
         by_id[doc.id] = doc
     return list(by_id.values())
+
+
+def _count_face_samples_by_name(name):
+    return len(_get_face_sample_docs_by_name(name))
 
 
 def _rename_face_samples(old_name, new_name):
@@ -1144,8 +1149,9 @@ def capture():
 @login_required
 def faces():
     persons = _get_faces_from_firestore()
+    message = (request.args.get("message") or "").strip()
 
-    return render_template("faces.html", users=persons)
+    return render_template("faces.html", users=persons, message=message)
 
 
 @app.route("/rename_face", methods=["POST"])
@@ -1264,22 +1270,48 @@ def add_face_capture():
         name = _normalize_face_name(request.form.get("name", ""))
         files = request.files.getlist("images")
 
-        if not _is_plausible_face_name(name) or len(files) != 10:
-            return "10 images required"
+        if not _is_plausible_face_name(name):
+            return "Invalid name"
+        if len(files) != 10:
+            return f"10 images required, got {len(files)}"
 
-        for i, file in enumerate(files, start=1):
-            img_pil = Image.open(file.stream).convert("RGB")
+        existing_count = _count_face_samples_by_name(name)
+
+        valid_uploads = 0
+        encoded_faces = 0
+
+        for file in files:
+            try:
+                img_pil = Image.open(file.stream).convert("RGB")
+            except Exception:
+                continue
+
+            valid_uploads += 1
             img_pil.thumbnail((640, 480))
 
             enc = face_recognition.face_encodings(np.array(img_pil))
-            if enc:
-                _store_face_sample(name, enc[0], img_pil, source="web_capture")
-                known_encodings.append(enc[0])
-                known_names.append(name)
+            if not enc:
+                continue
+
+            _store_face_sample(name, enc[0], img_pil, source="web_capture")
+            known_encodings.append(enc[0])
+            known_names.append(name)
+            encoded_faces += 1
+
+        if valid_uploads < 10:
+            return "Some captured images were empty/corrupt. Please recapture and try again."
+        if encoded_faces == 0:
+            return "No clear face detected in captured images. Please try again with better lighting."
 
         _add_face_to_meta(name)
 
-        return redirect("/faces")
+        total_count = existing_count + encoded_faces
+        if existing_count > 0:
+            message = f"Added {encoded_faces} new face images to {name}. Total samples: {total_count}."
+        else:
+            message = f"Added {encoded_faces} face images for {name}."
+
+        return redirect(f"/faces?message={quote_plus(message)}")
 
     return render_template("add_face_capture.html")
 
