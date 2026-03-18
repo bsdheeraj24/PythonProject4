@@ -73,8 +73,8 @@ function captureBlob() {
   const sourceW = video.videoWidth || 640;
   const sourceH = video.videoHeight || 480;
 
-  const targetW = 640;
-  const targetH = Math.round((sourceH / sourceW) * targetW) || 480;
+  const targetW = 480;
+  const targetH = Math.round((sourceH / sourceW) * targetW) || 360;
 
   const canvas = document.createElement("canvas");
   canvas.width = targetW;
@@ -82,7 +82,7 @@ function captureBlob() {
   canvas.getContext("2d").drawImage(video, 0, 0, targetW, targetH);
 
   return new Promise(resolve => {
-    canvas.toBlob(blob => resolve(blob), "image/jpeg", 0.8);
+    canvas.toBlob(blob => resolve(blob), "image/jpeg", 0.65);
   });
 }
 

@@ -293,6 +293,33 @@ def _store_face_sample(name, encoding_vec, img_pil, source):
     })
 
 
+def _store_face_samples_bulk(name, samples, source):
+    normalized_name = _normalize_face_name(name)
+    if not _is_plausible_face_name(normalized_name) or not samples:
+        return 0
+
+    name_key = _face_name_key(normalized_name)
+    stored = 0
+
+    for i in range(0, len(samples), 500):
+        batch = db.batch()
+        for encoding_vec, img_pil in samples[i:i + 500]:
+            payload = {
+                "name": normalized_name,
+                "name_key": name_key,
+                "encoding": np.asarray(encoding_vec, dtype=np.float64).tolist(),
+                "image_b64": _image_to_base64_jpeg(img_pil),
+                "source": source,
+                "created_at": firestore.SERVER_TIMESTAMP,
+            }
+            doc_ref = db.collection(FACE_SAMPLES_COLLECTION).document()
+            batch.set(doc_ref, payload)
+            stored += 1
+        batch.commit()
+
+    return stored
+
+
 def _delete_face_samples(name):
     normalized_name = _normalize_face_name(name)
     target_key = _face_name_key(normalized_name)
@@ -1279,6 +1306,7 @@ def add_face_capture():
 
         valid_uploads = 0
         encoded_faces = 0
+        pending_samples = []
 
         for file in files:
             try:
@@ -1287,13 +1315,13 @@ def add_face_capture():
                 continue
 
             valid_uploads += 1
-            img_pil.thumbnail((640, 480))
+            img_pil.thumbnail((480, 360))
 
             enc = face_recognition.face_encodings(np.array(img_pil))
             if not enc:
                 continue
 
-            _store_face_sample(name, enc[0], img_pil, source="web_capture")
+            pending_samples.append((enc[0], img_pil))
             known_encodings.append(enc[0])
             known_names.append(name)
             encoded_faces += 1
@@ -1302,6 +1330,8 @@ def add_face_capture():
             return "Some captured images were empty/corrupt. Please recapture and try again."
         if encoded_faces == 0:
             return "No clear face detected in captured images. Please try again with better lighting."
+
+        _store_face_samples_bulk(name, pending_samples, source="web_capture")
 
         _add_face_to_meta(name)
 
