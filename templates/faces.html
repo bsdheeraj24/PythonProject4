@@ -32,15 +32,16 @@
     <div class="col-6 col-md-3 mb-4 text-center">
       <div class="card shadow-sm">
         <div class="card-body">
-          <h6>{{ u }}</h6>
+          <h6>{{ u.name }}</h6>
+          <div class="text-muted small mb-2">Images enrolled: {{ u.count }}</div>
           <form method="POST" action="/rename_face" class="mb-2">
-            <input type="hidden" name="old_name" value="{{ u }}">
+            <input type="hidden" name="old_name" value="{{ u.name }}">
             <input type="text" name="new_name" class="form-control form-control-sm mb-2"
-                   value="{{ u }}" required>
+                   value="{{ u.name }}" required>
             <button type="submit" class="btn btn-sm btn-outline-primary">Save Name</button>
           </form>
-          <a href="/delete/{{u}}" class="btn btn-sm btn-danger"
-             onclick="return confirm('Delete {{u}}?')">
+          <a href="/delete/{{u.name}}" class="btn btn-sm btn-danger"
+             onclick="return confirm('Delete {{u.name}}?')">
             Delete
           </a>
         </div>

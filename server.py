@@ -351,6 +351,21 @@ def _count_face_samples_by_name(name):
     return len(_get_face_sample_docs_by_name(name))
 
 
+def _get_face_sample_counts():
+    counts = {}
+    try:
+        for doc in db.collection(FACE_SAMPLES_COLLECTION).stream():
+            payload = doc.to_dict() or {}
+            normalized_name = _normalize_face_name(payload.get("name", ""))
+            if not _is_plausible_face_name(normalized_name):
+                continue
+            key = _face_name_key(normalized_name)
+            counts[key] = counts.get(key, 0) + 1
+    except Exception:
+        return {}
+    return counts
+
+
 def _rename_face_samples(old_name, new_name):
     docs = _get_face_sample_docs_by_name(old_name)
     if not docs:
@@ -1177,8 +1192,16 @@ def capture():
 def faces():
     persons = _get_faces_from_firestore()
     message = (request.args.get("message") or "").strip()
+    sample_counts = _get_face_sample_counts()
+    users = [
+        {
+            "name": person,
+            "count": sample_counts.get(_face_name_key(person), 0),
+        }
+        for person in persons
+    ]
 
-    return render_template("faces.html", users=persons, message=message)
+    return render_template("faces.html", users=users, message=message)
 
 
 @app.route("/rename_face", methods=["POST"])
